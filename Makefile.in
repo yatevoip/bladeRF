@@ -1,0 +1,37 @@
+# Makefile
+# This file holds the make rules for the QMF transceiver
+
+INCLUDES := $(GSM_INCLUDES)
+LIBDEPS  := $(GSM_DEPS)
+INCFILES := transceiver.h
+LOCALLIBS := -lyate $(GSM_LIBS)
+
+PROGS_BRF := transceiver-bladerf
+PROGS_TESTS := transceiver-test
+
+ifneq (@HAVE_BRF@,no)
+FILES := $(FILES) bladerf/firmware.img bladerf/hostedx40.rbf bladerf/hostedx115.rbf
+PROGS := $(PROGS) $(PROGS_BRF)
+endif
+
+ifeq ($(BUILD_TESTS),yes)
+PROGS := $(PROGS) $(PROGS_TESTS)
+endif
+
+LIBS := libtransceiver.a
+OBJS := transceiver.o sigproc.o gsmutil.o
+EXTRACLEAN := main.o
+
+all:
+
+$(PROGS_BRF): LOCALLIBS := $(LOCALLIBS) @BRF_LIB@
+$(PROGS_BRF): CCFLAGS := $(CCFLAGS) -DHAVE_BRF
+$(PROGS_BRF): LOCALFLAGS = @BRF_INC@
+
+$(PROGS_TESTS): CCFLAGS := $(CCFLAGS) -DHAVE_TEST
+
+transceiver-bladerf: bladerf/bladerf.cpp main.o $(MKDEPS) $(INCFILES) $(LIBS) $(LIBDEPS)
+	$(COMPILE) -o $@ $(LOCALFLAGS) $< main.o $(LIBS) $(LDFLAGS) $(LOCALLIBS) $(LIBTHR)
+
+transceiver-test: test/test.cpp main.o $(MKDEPS) $(INCFILES) $(LIBS) $(LIBDEPS)
+	$(COMPILE) -o $@ $(LOCALFLAGS) $< main.o $(LIBS) $(LDFLAGS) $(LOCALLIBS) $(LIBTHR)
