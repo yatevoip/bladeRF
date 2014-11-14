@@ -38,6 +38,8 @@ class BrfIface;                         // A bladeRF interface
 #define BRF_HIGHSPEED_SAMPLES 256
 #define BRF_HIGHSPEED_SAMPLES_USE (BRF_HIGHSPEED_SAMPLES - 4)
 
+#define BRF_ENERGYPEAK 2047 // 2 ^ 11 - 1
+
 struct BrfTsHeader
 {
     uint32_t reserved;
@@ -288,6 +290,8 @@ private:
     int m_rxVga1;                        // Rx VGA1 gain
     BrfIO m_txIO;                        // Tx buffer and related data
     int m_txShowInfo;                    // Output Tx info (min/max values of input buffer)
+    bool m_modulated;                    // Flag used in test mode. It says if we should send modulated data or just predefined data.
+    int16_t* m_predefinedData;           // Predefined data to be sent in test mode
 };
 
 }; // namespace TelEngine

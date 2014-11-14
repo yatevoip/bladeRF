@@ -238,6 +238,17 @@ void BrfIO::clear()
     }
 }
 
+// Test input data
+static int16_t s_tenTen[BRF_SUPERSPEED_SAMPLES_USE * 2];
+static int16_t s_zeroZero[BRF_SUPERSPEED_SAMPLES_USE * 2];
+
+static void initTestData()
+{
+    if (s_tenTen[0] != s_tenTen[2])
+	return;
+    for (unsigned int i = 0;i < BRF_SUPERSPEED_SAMPLES_USE * 2;i += 4)
+	s_tenTen[i] = (i % 8) ? BRF_ENERGYPEAK : -BRF_ENERGYPEAK;
+}
 
 //
 // BrfIface
@@ -255,9 +266,12 @@ BrfIface::BrfIface()
     m_rxDcAvgI(0),
     m_rxDcAvgQ(0),
     m_rxVga1(BLADERF_RXVGA1_GAIN_MAX),
-    m_txShowInfo(0)
+    m_txShowInfo(0),
+    m_modulated(false),
+    m_predefinedData(0)
 {
     setSpeed(false);
+    initTestData();
 }
 
 BrfIface::~BrfIface()
@@ -275,7 +289,7 @@ bool BrfIface::init(const NamedList& params)
 // Set Rx/Tx frequency
 int BrfIface::tune(bool rx, double freq, double adj)
 {
-    return setFreq(rx,freq,adj,false) ? 0 : -1;
+    return setFreq(rx,freq + 600000,adj,false) ? 0 : -1;
 }
 
 // Set Rx/Tx power gain
@@ -305,7 +319,17 @@ int BrfIface::command(const String& cmd, String* rspParam, String* reason)
     }
     else if (cmd.startsWith("bladerf_debug_level "))
 	setBrfLibLog(cmd.substr(20));
-    else
+    else if (cmd.startsWith("unmodulated 10-10")) {
+	m_modulated = false;
+	m_predefinedData = s_tenTen;
+    } else if (cmd.startsWith("unmodulated 0000") || 
+	    cmd.startsWith("unmodulated")) {
+	m_modulated = false;
+	m_predefinedData = s_zeroZero;
+    } else if (cmd.startsWith("modulated")) {
+	m_modulated = true;
+	m_predefinedData = 0;
+    } else
 	return RadioIface::command(cmd,rspParam,reason);
     return status;
 }
@@ -466,6 +490,7 @@ bool BrfIface::writeRadio(RadioIOData& data)
     }
     int16_t* buf = data.data();
     unsigned int len = data.pos();
+    
     if (!(buf && len))
 	return true;
     if (m_txShowInfo) {
@@ -514,7 +539,11 @@ bool BrfIface::writeRadio(RadioIOData& data)
 	    if (m_txIO.m_buffers && (m_txIO.m_pos + cp) < m_txIO.useSamples())
 		break;
 	    int16_t* p = m_txIO.samples(m_txIO.m_buffers) + (m_txIO.m_pos * 2);
-	    ::memcpy(p,buf,cp * sizeof(int16_t) * 2);
+	    if (!m_modulated && m_predefinedData)
+		::memcpy(p,m_predefinedData,cp * sizeof(int16_t) * 2);
+	    else
+		::memcpy(p,buf,cp * sizeof(int16_t) * 2);
+	    
 #ifdef BRF_DEBUG_SEND
 	    Debug(this,DebugAll,"%sTx copied %u samples buf=%u at ts=" FMT64U " [%p]",
 		prefix(),cp,m_txIO.m_buffers,m_txIO.m_timestamp,this);
@@ -748,8 +777,8 @@ bool BrfIface::enableModule(bool rx, bool on)
     }
     if (on) {
 	BrfIO& io = rx ? m_rxIO : m_txIO;
-	unsigned int bufSizeSamples = 2048;  // Buffer size in samples
-	unsigned int numTransfers = 1;
+	unsigned int bufSizeSamples = 8192;  // Buffer size in samples
+	unsigned int numTransfers = 4;
 	if (!initSyncIO(rx,io.libBuffers(),bufSizeSamples,numTransfers))
 	    return false;
     }
@@ -831,6 +860,8 @@ bool BrfIface::setBandwith(bool rx, int& code, String& what, unsigned int value,
     unsigned int bw = 0;
     if (!actual)
 	actual = &bw;
+    if (!rx)
+	value /= 2;
     code = ::bladerf_set_bandwidth(m_dev,rxtxmod(rx),value,actual);
     if (code >= 0) {
 	if (*actual >= value)
