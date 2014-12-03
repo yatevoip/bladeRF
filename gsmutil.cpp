@@ -54,6 +54,7 @@ const int8_t* GSMUtils::abSyncTable()
     return s_abSyncTable;
 }
 
+GSMTxBurst GSMTxBurst::s_zeroBurst;
 
 //
 // GSMTxBurst
@@ -92,17 +93,73 @@ GSMTxBurst* GSMTxBurst::get(const DataBlock& data, unsigned int length)
     // Maximum decibels level is 0 so the power level received will be <= 0
     // In conclusion  powerLevel = 10^(-receivedPowerLevel/10)
     burst->m_powerLevel = ::pow(10, -data.at(5) / 10); // This should be between 0 and 1! See how should be transformed!
-    burst->assign((void*)data.data(6),GSM_BURST_LENGTH);
+
+    burst->assign(0,4);
+    burst->append((void*)data.data(6),GSM_BURST_LENGTH);
+    uint8_t a[4];
+    a[0] = a[1] = a[2] = a[3] = 0;
+    burst->append(a,4);
     return burst;
+}
+
+GSMTxBurst* GSMTxBurst::getZeroBurst()
+{ 
+    if (!GSMTxBurst::s_zeroBurst.m_transformed) {
+	s_zeroBurst.m_isDummy = true;
+    }
+    return &s_zeroBurst;
 }
 
 const ComplexArray* GSMTxBurst::transform(const SignalProcessing& sigproc)
 {
     if (m_transformed)
 	return m_transformed;
+    if (this == &s_zeroBurst) {
+	m_transformed = new ComplexArray(sigproc.getModulatedLength());
+	return m_transformed;
+    }
     m_transformed = sigproc.modulate((unsigned char*)data(),length());
     if (!m_transformed)
 	return 0;
+    
+    
+/*    
+    float amp = (1 - 0.01) / 16;
+    for (unsigned int i = 0;i < 24;i++) {
+	if (i < 8)
+	    (*m_transformed)[i].set(0.01,0);
+	else
+	    Complex::multiplyF((*m_transformed)[i],(*m_transformed)[i],amp * (i + 1 - 8));
+    }
+    
+    unsigned int startSample = 1208;
+    for (unsigned int i = startSample;i < 1246;i++) {
+	if (i < startSample + 16)
+	    Complex::multiplyF((*m_transformed)[i],(*m_transformed)[i],amp * (startSample + 16 - i));
+	else
+	    Complex::multiplyF((*m_transformed)[i],(*m_transformed)[i],0.01);
+    }
+*/   
+    // NOTE Start
+    // This is a test variant for power ramp
+    float amp = (1 - 0.01) / 4;
+    for (unsigned int i = 0;i < 24;i++) {
+	if (i < 20)
+	    (*m_transformed)[i].set(0.01,0);
+	else
+	    Complex::multiplyF((*m_transformed)[i],(*m_transformed)[i],amp * (i + 1 - 20));
+    }
+    
+
+    unsigned int startSample = 1208;
+    for (unsigned int i = startSample;i < 1246;i++) {
+	if (i < startSample + 4)
+	    Complex::multiplyF((*m_transformed)[i],(*m_transformed)[i],amp * (startSample + 4 - i));
+	else
+	    (*m_transformed)[i].set(0.01,0);
+    }
+    // NOTE End
+    
     const ComplexArray* sinusoid = sigproc.getSinusoid(m_arfcnNumber);
     if (!sinusoid || sinusoid->length() != m_transformed->length()) {
 	TelEngine::destruct(m_transformed);

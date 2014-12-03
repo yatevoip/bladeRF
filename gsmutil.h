@@ -398,10 +398,10 @@ public:
 	{ return m_arfcnNumber; }
 
     /**
-     * Initialize this burst from the data read from the socket.
+     * Obtain a burst from the given data
      * @param data The data read from the socket.
      * @param length The data length read from the socket
-     * @return True if the data is valid.
+     * @return A new burst if the data is valid.
      */
     static GSMTxBurst* get(const DataBlock& data, unsigned int length);
 
@@ -421,18 +421,41 @@ public:
     inline bool isFiller() const
 	{ return m_isFillerBurst; }
 
+    /**
+     * Mark this burst as beeing a dummy one
+     */
+    inline void setDummy()
+	{ m_isDummy = true; }
+
+    /**
+     * Check if this burst is a dummy one
+     * @return True if this burst is a dummy one
+     */
+    inline bool isDummy() const
+	{ return m_isDummy; }
+
+    /**
+     * Get 'zero' burst. A burst that after all transformatons the output values are 0
+     * @return A pointer to a 'zero burst'. NOTE The caller does not own the pointer
+     */
+    static GSMTxBurst* getZeroBurst();
+
+    static GSMTxBurst s_zeroBurst;
+
 private:
     /**
      * Constructor
      */
     GSMTxBurst()
-	: m_transformed(0), m_arfcnNumber(0), m_powerLevel(0), m_isFillerBurst(false)
+	: m_transformed(0), m_arfcnNumber(0), m_powerLevel(0), m_isFillerBurst(false),
+	m_isDummy(false)
 	{}
 
     ComplexArray* m_transformed;
     unsigned int m_arfcnNumber;
     float m_powerLevel;
     bool m_isFillerBurst;
+    bool m_isDummy;
 };
 
 
