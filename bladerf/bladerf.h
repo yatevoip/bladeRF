@@ -29,6 +29,7 @@ namespace TelEngine {
 
 struct BrfIO;                           // A bladeRF I/O buffer and related data
 class BrfIface;                         // A bladeRF interface
+class BladeRFDump;                      // Helper class used to dump data
 
 // Timestamped data includes a header at buffer start
 // The header has 16 octets = 4 samples (4 complex numbers)
@@ -207,6 +208,18 @@ public:
      */
     virtual void destruct();
 
+    /**
+     * Stop dumping data.
+     * @param rx True if we should stop dumping RX data
+     */
+    inline void stopDump(bool rx = true)
+    {
+	Lock myLock(m_dumpMutex);
+	if (!rx) {
+	    TelEngine::destruct(m_txDump);
+	    m_txDump = 0;
+	}
+    }
 protected:
     /**
      * Read data from radio
@@ -264,6 +277,19 @@ private:
     void computeRx();
     int handleRxCmds(String& s, String* rspParam, String* reason);
     int handleTxCmds(String& s, String* rspParam, String* reason);
+    bool setLoopback(int loopback);
+    bool getLoopback(int &loopbak);
+    bool setSampling(int sampling);
+    bool getSampling(int &sampling);
+    bool setLnaGain(int lnaGain);
+    bool getLnaGain(int &gain);
+    bool getSampleRate(bool rx, unsigned int& sampleRate);
+    bool getBandwidth(bool rx, unsigned int& bandwidth);
+    bool setLpfMode(bool rx, int lpfMode);
+    bool getLpfMode(bool rx, int &lpfMode);
+    bool getVga(bool rx,bool one, int& gain);
+    bool getFrequency(bool rx, unsigned int &freq);
+
     inline uint32_t flag(uint32_t mask) const
 	{ return (m_flags & mask); }
     inline bool isFlag(uint32_t mask) const
@@ -292,6 +318,42 @@ private:
     int m_txShowInfo;                    // Output Tx info (min/max values of input buffer)
     bool m_modulated;                    // Flag used in test mode. It says if we should send modulated data or just predefined data.
     int16_t* m_predefinedData;           // Predefined data to be sent in test mode
+    // Test data
+    Mutex m_dumpMutex;                   // Mutex used to block dump operations
+    BladeRFDump* m_txDump;               // Dump data object for TX
+};
+
+/**
+ * Helper class which is used to dump data on console or in a file
+ */
+class BladeRFDump : public GenObject
+{
+public:
+    enum DumpType {
+	Raw,
+	Samples,
+	Complex
+    };
+
+    BladeRFDump(BrfIface* iface)
+	: m_type(Raw), m_fileAppend(false), m_samples(1250), m_interface(iface)
+    {}
+
+    /**
+     * Dump the received buffer on stdout or in file.
+     * @param buf The buffer to dump.
+     * @param len The buffer length.
+     */
+    void dump(const void* buf, unsigned int samples);
+
+    int m_type;
+    String m_fileName;
+    bool m_fileAppend;
+    int m_samples;
+private:
+    BrfIface* m_interface;
+    DataBlock m_data;
+    String m_dump;
 };
 
 }; // namespace TelEngine

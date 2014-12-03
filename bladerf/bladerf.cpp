@@ -43,6 +43,57 @@ using namespace TelEngine;
 #define BRF_RX_DC_OFFSET_DEF (BRF_RX_DC_OFFSET_ERROR * BRF_RX_DC_OFFSET_AVG_DAMPING)
 #define BRF_RX_DC_OFFSET(val) (((double)val * BRF_RX_DC_OFFSET_COEF + BRF_RX_DC_OFFSET_ERROR) * BRF_RX_DC_OFFSET_AVG_DAMPING)
 
+#define BANDWIDTH 1500000
+
+const TokenDict s_loopbackMode[] = {
+    { "txlpf-rxvga2",       BLADERF_LB_BB_TXLPF_RXVGA2 },
+    { "txvga1-rxvga2",      BLADERF_LB_BB_TXVGA1_RXVGA2 },
+    { "txlpf-rxlpf",        BLADERF_LB_BB_TXLPF_RXLPF },
+    { "txvga1-rxlpf",       BLADERF_LB_BB_TXVGA1_RXLPF },
+    { "lna1",               BLADERF_LB_RF_LNA1 },
+    { "lna2",               BLADERF_LB_RF_LNA2 },
+    { "lna3",               BLADERF_LB_RF_LNA3 },
+    { "none",               BLADERF_LB_NONE },
+    { 0, 0 },
+};
+
+const TokenDict s_sampling[] = {
+    { "unknown",            BLADERF_SAMPLING_UNKNOWN },
+    { "internal",           BLADERF_SAMPLING_INTERNAL },
+    { "external",           BLADERF_SAMPLING_EXTERNAL },
+    { 0, 0 },
+};
+
+const TokenDict s_lnaGain[] = {
+    { "unknown",            BLADERF_LNA_GAIN_UNKNOWN },
+    { "bypass",             BLADERF_LNA_GAIN_BYPASS },
+    { "mid",                BLADERF_LNA_GAIN_MID },
+    { "max",                BLADERF_LNA_GAIN_MAX },
+    { 0, 0 },
+};
+
+const TokenDict s_lpfMode[] = {
+    { "normal",            BLADERF_LPF_NORMAL },
+    { "bypassed",          BLADERF_LPF_BYPASSED },
+    { "dissabled",         BLADERF_LPF_DISABLED },
+    { 0, 0 },
+};
+
+const TokenDict s_correction[] = {
+    { "i",                 BLADERF_CORR_LMS_DCOFF_I },
+    { "q",                 BLADERF_CORR_LMS_DCOFF_Q },
+    { "phase",             BLADERF_CORR_FPGA_PHASE },
+    { "gain",              BLADERF_CORR_FPGA_GAIN },
+    { 0, 0 },
+};
+
+const TokenDict s_dumpType[] = {
+    { "raw",               BladeRFDump::Raw },
+    { "samples",           BladeRFDump::Samples },
+    { "complex",           BladeRFDump::Complex },
+    { 0, 0 },
+};
+
 enum BrfFlags
 {
     BrfRxOn =      0x00000001,
@@ -118,6 +169,11 @@ static inline int brfAddVer(String& dest, int& level, int e, struct bladerf_vers
     if (addError(dest,level,e) >= 0)
 	addVersion(dest,ver);
     return e;
+}
+
+static inline int tuneCmdReturn(bool ret)
+{
+    return ret ? Transceiver::CmdEOk : Transceiver::CmdEFailure;
 }
 
 // Initialize data used to wait for interface Tx busy
@@ -250,6 +306,8 @@ static void initTestData()
 	s_tenTen[i] = (i % 8) ? BRF_ENERGYPEAK : -BRF_ENERGYPEAK;
 }
 
+const char* s_dumpMutexName = "BrfIfaceDataDump";
+
 //
 // BrfIface
 //
@@ -268,7 +326,9 @@ BrfIface::BrfIface()
     m_rxVga1(BLADERF_RXVGA1_GAIN_MAX),
     m_txShowInfo(0),
     m_modulated(false),
-    m_predefinedData(0)
+    m_predefinedData(0),
+    m_dumpMutex(true,s_dumpMutexName),
+    m_txDump(0)
 {
     setSpeed(false);
     initTestData();
@@ -320,15 +380,52 @@ int BrfIface::command(const String& cmd, String* rspParam, String* reason)
     else if (cmd.startsWith("bladerf_debug_level "))
 	setBrfLibLog(cmd.substr(20));
     else if (cmd.startsWith("unmodulated 10-10")) {
+	// unmodulated 10-10 command will replace the data that should be sent 
+	// to bladeRF with an energized form of the (1,0i),(0,0i),(-1,0i),(0,0i)...
 	m_modulated = false;
 	m_predefinedData = s_tenTen;
     } else if (cmd.startsWith("unmodulated 0000") || 
-	    cmd.startsWith("unmodulated")) {
+	    cmd.startsWith("unmodulated") || cmd.startsWith("off")) {
+	// unmodulated <0000> command will replace the data that should be sent 
+	// to bladeRF with (0,0i),(0,0i),(0,0i),(0,0i)...
 	m_modulated = false;
 	m_predefinedData = s_zeroZero;
-    } else if (cmd.startsWith("modulated")) {
+    } else if (cmd.startsWith("modulated") || cmd.startsWith("normal")) {
 	m_modulated = true;
 	m_predefinedData = 0;
+    } else if (cmd.startsWith("VCTCXO ",false,true)) {
+	String s = cmd.substr(7);
+	setVCTCXO(s.toInteger(),false);
+    } else if (cmd.startsWith("loopback ")) {
+	String s = cmd.substr(9);
+	int l = lookup(s,s_loopbackMode,BLADERF_LB_NONE);
+	return tuneCmdReturn(setLoopback(l));
+    } else if (cmd.startsWith("loopback")) {
+	int l = 0;
+	bool ret = getLoopback(l);
+	if (ret)
+	    rspParam->append(lookup(l,s_loopbackMode));
+	return tuneCmdReturn(ret);
+    } else if (cmd.startsWith("sampling ")) {
+	String s = cmd.substr(9);
+	int l = lookup(s,s_sampling,BLADERF_SAMPLING_UNKNOWN);
+	return tuneCmdReturn(setSampling(l));
+    } else if (cmd.startsWith("sampling")) {
+	int s = 0;
+	bool ret = getSampling(s);
+	if (ret)
+	    rspParam->append(lookup(s,s_sampling));
+	return tuneCmdReturn(ret);
+    } else if (cmd.startsWith("lna_gain ")) {
+	String s = cmd.substr(9);
+	int l = lookup(s,s_lnaGain,BLADERF_LNA_GAIN_UNKNOWN);
+	return tuneCmdReturn(setLnaGain(l));
+    } else if (cmd.startsWith("lna_gain")) {
+	int l = 0;
+	bool ret = getLnaGain(l);
+	if (ret)
+	    rspParam->append(lookup(l,s_lnaGain));
+	return tuneCmdReturn(ret);
     } else
 	return RadioIface::command(cmd,rspParam,reason);
     return status;
@@ -490,7 +587,7 @@ bool BrfIface::writeRadio(RadioIOData& data)
     }
     int16_t* buf = data.data();
     unsigned int len = data.pos();
-    
+
     if (!(buf && len))
 	return true;
     if (m_txShowInfo) {
@@ -569,8 +666,13 @@ bool BrfIface::writeRadio(RadioIOData& data)
 	    break;
 	unsigned int n = m_txIO.m_buffers;
 	m_txIO.m_buffers = 0;
-	printIO(this,false,m_rxIO,m_txIO,n);
-	// Send the buffer
+
+	if (m_txDump) {
+	    Lock myLock(m_dumpMutex);
+	    if (m_txDump)
+		m_txDump->dump(m_txIO.buffer(),m_txIO.bufSamples());
+	}
+
 	int ok = ::bladerf_sync_tx(m_dev,m_txIO.buffer(),n * m_txIO.bufSamples(),
 	    0,data.syncIOWait());
 	if (thShouldExit(this))
@@ -676,8 +778,8 @@ bool BrfIface::open(const NamedList& params)
 	    setSampleRate(false,code,what,&txRate)))
 	    break;
 	// Set bandwith
-	if (!(setBandwith(true,code,what,rxRate,&rxBw) &&
-	    setBandwith(false,code,what,txRate,&txBw)))
+	if (!(setBandwith(true,code,what,BANDWIDTH,&rxBw) &&
+	    setBandwith(false,code,what,BANDWIDTH,&txBw)))
 	    break;
 	// Init sync I/O timeouts
 	unsigned int tout = getUInt(params,YSTRING("io_timeout"),500,Thread::idleMsec());
@@ -839,6 +941,7 @@ bool BrfIface::setSampleRate(bool rx, int& code, String& what, unsigned int* act
     unsigned int result = 0;
     if (!actual)
 	actual = &result;
+
     code = ::bladerf_set_sample_rate(m_dev,rxtxmod(rx),rate,actual);
     if (code < 0) {
 	what << "Failed to set " << rxtx(rx) << " sampling rate to " << rate;
@@ -860,8 +963,6 @@ bool BrfIface::setBandwith(bool rx, int& code, String& what, unsigned int value,
     unsigned int bw = 0;
     if (!actual)
 	actual = &bw;
-    if (!rx)
-	value /= 2;
     code = ::bladerf_set_bandwidth(m_dev,rxtxmod(rx),value,actual);
     if (code >= 0) {
 	if (*actual >= value)
@@ -953,7 +1054,7 @@ bool BrfIface::setVCTCXO(unsigned int val, bool safe)
     BRF_TX_SERIALIZE_ON_RET(safe,false);
     int ok = ::bladerf_dac_write(m_dev,val << 8);
     if (ok >= 0) {
-	XDebug(this,DebugAll,"%sVCTCXO set to %u [%p]",prefix(),val,this);
+	Debug(this,DebugAll,"%sVCTCXO set to %u [%p]",prefix(),val,this);
 	return true;
     }
     Debug(this,DebugGoOn,"%sFailed to set VCTCXO to %u: %d %s [%p]",
@@ -1069,6 +1170,92 @@ void BrfIface::setSpeed(bool super, const NamedList& params)
     libBuffs = getUInt(params,YSTRING("tx_lib_buffers"),8,1);
     nBuffs = getUInt(params,YSTRING("tx_buffers"),1,1,libBuffs);
     m_txIO.setBuffers(libBuffs,nBuffs,m_superSpeed);
+}
+
+bool BrfIface::setLoopback(int loopback)
+{
+    return ::bladerf_set_loopback(m_dev, (bladerf_loopback)loopback) >= 0;
+}
+
+bool BrfIface::getLoopback(int& loopback)
+{
+    bladerf_loopback l;
+    if (::bladerf_get_loopback(m_dev, &l) < 0)
+	return false;
+    loopback = l;
+    return true;
+}
+
+bool BrfIface::setSampling(int sampling)
+{
+    return ::bladerf_set_sampling(m_dev, (bladerf_sampling)sampling) >= 0;
+}
+
+bool BrfIface::getSampling(int& sampling)
+{
+    bladerf_sampling s;
+    if (::bladerf_get_sampling(m_dev, &s) < 0)
+	return false;
+    sampling = s;
+    return true;
+}
+
+bool BrfIface::setLnaGain(int lnaGain)
+{
+    return ::bladerf_set_lna_gain(m_dev, (bladerf_lna_gain)lnaGain) >= 0;
+}
+
+bool BrfIface::getLnaGain(int& lna_gain)
+{
+    bladerf_lna_gain lg;
+    if (::bladerf_get_lna_gain(m_dev, &lg) < 0)
+	return false;
+    lna_gain = lg;
+    return true;
+}
+
+bool BrfIface::getSampleRate(bool rx, unsigned int& sampleRate)
+{
+    int ret = ::bladerf_get_sample_rate(m_dev,rxtxmod(rx),&sampleRate);
+    if (ret < 0)
+	return false;
+    return true;
+}
+
+bool BrfIface::getBandwidth(bool rx, unsigned int &bandwidth)
+{
+    return ::bladerf_get_bandwidth(m_dev,rxtxmod(rx),&bandwidth) >= 0;
+}
+
+bool BrfIface::setLpfMode(bool rx, int lpfMode)
+{
+    return ::bladerf_set_lpf_mode(m_dev, rxtxmod(rx), (bladerf_lpf_mode)lpfMode) >= 0;
+}
+
+bool BrfIface::getLpfMode(bool rx, int &lpfMode)
+{
+    bladerf_lpf_mode lm;
+    if (::bladerf_get_lpf_mode(m_dev, rxtxmod(rx), &lm) < 0)
+	return false;
+    lpfMode = lm;
+    return true;
+}
+
+bool BrfIface::getVga(bool rx, bool one, int& gain)
+{
+    if (rx) {
+	if (one)
+	    return ::bladerf_get_rxvga1(m_dev,&gain) >= 0;
+	return::bladerf_get_rxvga2(m_dev,&gain) >= 0;
+    }
+    if (one)
+	return ::bladerf_get_txvga1(m_dev,&gain) >= 0;
+    return ::bladerf_get_txvga2(m_dev,&gain) >= 0;
+}
+
+bool BrfIface::getFrequency(bool rx, unsigned int &freq)
+{
+    return ::bladerf_get_frequency(m_dev,rxtxmod(rx),&freq) >= 0;
 }
 
 static inline void computeRxAdjustPeak(int& p, int val, uint64_t& peakTs, uint64_t& ts)
@@ -1224,10 +1411,213 @@ int BrfIface::handleTxCmds(String& s, String* rspParam, String* reason)
 		return Transceiver::CmdEInvalidParam;
 	    m_txShowInfo = val;
 	}
-    }
-    else
+    } else if (s.startSkip("sample_rate ",false)) {
+	int sampleRate = s.toInteger(-1);
+	if (sampleRate < 0)
+	    return Transceiver::CmdEInvalidParam;
+	unsigned int actual = 0;
+	String what;
+	return tuneCmdReturn(setSampleRate(false,sampleRate,what,&actual));
+    } else if (s.startSkip("sample_rate",false)) {
+	unsigned int sampleRate = 0;
+	bool ret = getSampleRate(false,sampleRate);
+	if (ret)
+	    *rspParam << sampleRate;
+	return tuneCmdReturn(ret);
+    } else if (s.startSkip("bandwidth ",false)) {
+	int bandwidth = s.toInteger(-1);
+	Debug(DebugTest,"bandwidth is %d",bandwidth);
+	if (bandwidth < 0)
+	    return Transceiver::CmdEInvalidParam;
+	String what;
+	return tuneCmdReturn(setBandwith(false,bandwidth,what,0));
+    } else if (s.startSkip("bandwidth",false)) {
+	unsigned int bandwidth = 0;
+	bool ret = getBandwidth(false,bandwidth);
+	if (ret)
+	    *rspParam << bandwidth;
+	return tuneCmdReturn(ret);
+    } else if (s.startSkip("lpf_mode ",false)) {
+	int lpfMode = lookup(s,s_lpfMode);
+	if (lpfMode < 0)
+	    return Transceiver::CmdEInvalidParam;
+	return tuneCmdReturn(setLpfMode(false,lpfMode));
+    } else if (s.startSkip("lpf_mode",false)) {
+	int lpfMode = 0;
+	bool ret = getLpfMode(false,lpfMode);
+	if (ret)
+	    *rspParam << lookup(lpfMode,s_lpfMode);
+	return tuneCmdReturn(ret);
+    } else if (s.startSkip("vga1 ",false)) {
+	int vga1 = s.toInteger();
+	if (vga1 < BLADERF_TXVGA1_GAIN_MIN || vga1 > BLADERF_TXVGA1_GAIN_MAX)
+	    return Transceiver::CmdEInvalidParam;
+	return tuneCmdReturn(setGainVga(true, false, vga1, false, true) >= 0);
+    } else if (s.startSkip("vga2 ",false)) {
+	int vga2 = s.toInteger();
+	if (vga2 < BLADERF_TXVGA2_GAIN_MIN || vga2 > BLADERF_TXVGA2_GAIN_MAX)
+	    return Transceiver::CmdEInvalidParam;
+	return tuneCmdReturn(setGainVga(false, false, vga2, false, true) >= 0);
+    } else if (s.startSkip("vga1",false)) {
+	int vga1;
+	bool ret = getVga(false,true, vga1);
+	if (ret) {
+	    *rspParam << "current: " << vga1 << " min: " << 
+		    BLADERF_TXVGA1_GAIN_MIN << " max: " << BLADERF_TXVGA1_GAIN_MAX;
+	}
+	return tuneCmdReturn(ret);
+    } else if (s.startSkip("vga2",false)) {
+	int vga2;
+	bool ret = getVga(false,false, vga2);
+	if (ret) {
+	    *rspParam << "current: " << vga2 << " min: " << 
+		    BLADERF_TXVGA2_GAIN_MIN << " max: " << BLADERF_TXVGA2_GAIN_MAX;
+	}
+	return tuneCmdReturn(ret);
+    } else if (s.startSkip("frequency",false)) {
+	unsigned int freq;
+	bool ret = getFrequency(false,freq);
+	if (ret)
+	    *rspParam << freq;
+	return tuneCmdReturn(ret);
+    } else if (s.startSkip("correction ",false)) {
+	int index = s.find(' ');
+	if (index < 1) {
+	    *rspParam << "unable to determine correction type!";
+	    return Transceiver::CmdEInvalidParam;
+	}
+	int cType = lookup(s.substr(0,index),s_correction,-1);
+	if (cType < 0) {
+	    *rspParam << "unable to determine correction type!";
+	    return Transceiver::CmdEInvalidParam;
+	}
+	s = s.substr(index + 1);
+	Debug(DebugTest,"s is %s",s.c_str());
+	int corr = s.toInteger(-50000);
+	if (corr == -50000) {
+	    *rspParam << "unable to determine correction value!";
+	    return Transceiver::CmdEInvalidParam;
+	}
+	if (cType == BLADERF_CORR_LMS_DCOFF_I)
+	    return tuneCmdReturn(setCorrection(false,true,corr));
+	if (cType == BLADERF_CORR_LMS_DCOFF_Q)
+	    return tuneCmdReturn(setCorrection(false,false,corr));
+	return tuneCmdReturn(::bladerf_set_correction(m_dev,rxtxmod(false),
+		(bladerf_correction)cType,corr) >= 0);
+    } else if (s.startSkip("correction",false)) {
+	int16_t i,q,phase,gain;
+	::bladerf_get_correction(m_dev,rxtxmod(false),BLADERF_CORR_LMS_DCOFF_Q,&q);
+	::bladerf_get_correction(m_dev,rxtxmod(false),BLADERF_CORR_LMS_DCOFF_I,&i);
+	::bladerf_get_correction(m_dev,rxtxmod(false),BLADERF_CORR_FPGA_GAIN,&gain);
+	::bladerf_get_correction(m_dev,rxtxmod(false),BLADERF_CORR_FPGA_PHASE,&phase);
+	*rspParam << "i: " << i << " q: " << q << " gain: " << gain << " phase: " << phase;
+	return tuneCmdReturn(true);
+    } else if (s.startSkip("dump ",false)) {
+	ObjList* split = s.split(' ',false);
+	if (!split)
+	    return Transceiver::CmdEInvalidParam;
+	Lock myLock(m_dumpMutex);
+	if (m_txDump)
+	    TelEngine::destruct(m_txDump);
+	m_txDump = new BladeRFDump(this);
+	int count = split->count();
+	while (true) {
+	    String* type = static_cast<String*>((*split)[0]);
+	    if (type)
+		m_txDump->m_type = lookup(*type,s_dumpType);
+	    if (count == 1)
+		break;
+
+	    String* samples = static_cast<String*>((*split)[1]);
+	    if (samples)
+		m_txDump->m_samples = samples->toInteger(1250);
+	    if (count == 2)
+		break;
+    
+	    String* file = static_cast<String*>((*split)[2]);
+	    if (file)
+		m_txDump->m_fileName = *file;
+
+	    if (count == 3)
+		break;
+
+	    String* append = static_cast<String*>((*split)[3]);
+	    if (append)
+		m_txDump->m_fileAppend = String::boolText(*append);
+	    break;
+	}
+	TelEngine::destruct(split);
+	return tuneCmdReturn(true);
+    } else if (s.startSkip("dump")) {
+	*rspParam << "dump type[raw|samples|complex] samples[integer] file[file name] append[boolean]";
+	return tuneCmdReturn(true);
+    } else
 	return Transceiver::CmdEUnkCmd;
     return Transceiver::CmdEOk;
+}
+
+/**
+ * class BladeRFDump
+ */
+void BladeRFDump::dump(const void* data, unsigned int samples)
+{
+    if (m_samples <= 0) {
+	m_interface->stopDump(false);
+	return;
+    }
+    switch (m_type) {
+	case Raw:
+	    if ((int)samples > m_samples)
+		samples = m_samples;
+	    m_data.append((void*)data,samples * 4 + 16);
+	    m_samples -= samples;
+	    break;
+	case Samples:
+	{
+	    if ((int)samples > m_samples)
+		samples = m_samples;
+	    int8_t* buf = (int8_t*)data;
+	    m_data.append(buf + 16,samples * 4);
+	    m_samples -= samples;
+	    break;
+	}
+	case Complex:
+	{
+	    int16_t* buf = (int16_t*)data;
+	    buf += 8;
+	    char tmp[100];
+	    for (unsigned int i = 0; i < samples * 2 && m_samples > 0;i += 2, m_samples--) {
+		int len = ::sprintf(tmp,"%+d%+di, ",buf[i],buf[i + 1]);
+		m_dump.append(tmp,len);
+	    }
+	    break;
+	}
+	default:
+	    m_interface->stopDump(false);
+	    return;
+    }
+    if (m_samples > 0)
+	return; // Data Not Completed
+    // All samples dump the data
+    if (!TelEngine::null(m_fileName)) {
+	File f; //(const char* name, bool canWrite = false, bool canRead = true, bool create = false, bool append = false, bool binary = false, bool pubReadable = false, bool pubWritable = false) 
+	if (!f.openPath(m_fileName,true,false,true,m_fileAppend)) {
+	    Debug("BladeRFDump",DebugMild,"Unable to open file '%s'",m_fileName.c_str());
+	    m_interface->stopDump(false);
+	    return;
+	}
+	if (m_type != Complex)
+	    f.writeData(m_data.data(),m_data.length());
+	else
+	    f.writeData(m_dump.c_str(),m_dump.length());
+	f.detach();
+	m_interface->stopDump(false);
+	return;
+    }
+    if (m_type != Complex)
+	m_dump.hexify(m_data.data(),m_data.length(),' ');
+    ::printf("BladeRFDump:\n%s\n",m_dump.c_str());
+    m_interface->stopDump(false);
 }
 
 /* vi: set ts=8 sw=4 sts=4 noet: */
