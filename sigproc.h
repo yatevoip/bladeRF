@@ -167,6 +167,13 @@ public:
 	}
 
     /**
+     * Obtain tha absolute value of a complex number
+     * @return The absolute value.
+     */
+    inline float abs() const
+	{ return ::sqrt(m_real*m_real + m_imag*m_imag);}
+
+    /**
      * Multiply this number with its conjugate
      * @return The result
      */
@@ -730,6 +737,12 @@ public:
      */
     static float computePower(const float* data, unsigned int len,
 	unsigned int middle, float param = 1.0);
+    
+    inline unsigned int getModulatedLength() const
+	{ 
+	    unsigned int modlen = m_oversample * BITS_PER_TIMESLOT;
+	    return (m_oversample % 4 != 0) ? modlen++ : modlen;
+	}
 
 protected:
     void buildSinusoids();

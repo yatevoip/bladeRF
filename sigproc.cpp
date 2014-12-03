@@ -23,7 +23,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define COMPLEX_DUMP_G
+//#define COMPLEX_DUMP_G
 
 using namespace TelEngine;
 
@@ -42,7 +42,7 @@ void Complex::dump(String& dest) const
 #ifdef COMPLEX_DUMP_G
     int ret = sprintf(a,"(%g,%g)",real(),imag());
 #else
-    int ret = sprintf(a,"(%s%.10f,%s%.10fi)",real() < 0 ? "" : " ",real(),imag() < 0 ? "" : " ",imag());
+    int ret = sprintf(a,"%+.5f%+.5fi, ",real(),imag());
 #endif
     dest.append(a,ret);
 }
@@ -153,12 +153,26 @@ void SignalProcessing::fillFrequencyShift(ComplexArray* out, unsigned int oversa
 {
     if (!out)
 	return;
-    out->assign(BITS_PER_TIMESLOT * oversample);
+    out->assign((int)BITS_PER_TIMESLOT);
     for (unsigned int i = 0; i < out->length(); i++) {
 	// s[i] = e^(-jnPI/2S)
 	// Set n*PI/2* oversample as the imaginary part of a complex number
 	// Calculate the exponetial of that number
-	Complex::exp((*out)[i],0,-(float)i * PI / (2 * oversample));
+	//Complex::exp((*out)[i],0,-(float)i * PI / (2 * oversample));
+	switch (i % 4) {
+	    case 0:
+		(*out)[i].set(1,0);
+		break;
+	    case 1:
+		(*out)[i].set(0,1);
+		break;
+	    case 2:
+		(*out)[i].set(-1,0);
+		break;
+	    case 3:
+		(*out)[i].set(0,-1);
+		break;
+	}
     }
 #ifdef DUMP_COMPLEX
     String outDump;
@@ -195,9 +209,9 @@ ComplexArray* SignalProcessing::getConvolution(const ComplexArray& x,
 #ifdef DUMP_COMPLEX
     String xDump,hDump;
     x.dump(xDump);
+    Debug(DebugAll,"SignalProcessing::getConvolution x: %s, ",xDump.c_str());
     h.dump(hDump);
-    Debug(DebugAll,"SignalProcessing::getConvolution x: %s, \n h: %s",xDump.c_str(),
-	hDump.c_str());
+    Debug(DebugAll,"SignalProcessing::getConvolution h: %s",hDump.c_str());
 #endif
 
     if (x.length() <= h.length()) {
@@ -227,6 +241,7 @@ ComplexArray* SignalProcessing::getConvolution(const ComplexArray& x,
 	    (*ret)[i] += tmp;
 	}
     }
+    
 #ifdef DUMP_COMPLEX
     String outDump;
     ret->dump(outDump);
@@ -252,14 +267,17 @@ ComplexArray* SignalProcessing::modulate(unsigned char* inData,
 	oversample,inDump.c_str());
 #endif
     ComplexArray modulated(BITS_PER_TIMESLOT * oversample);
-    unsigned int parseSize = inDataLength * 8;
+    unsigned int parseSize = inDataLength * oversample;
     if (parseSize > modulated.length())
 	parseSize = modulated.length();
-    // x[i] = 2*inData[n/oversample] - 1; x[i] can have only binary values (0 or 1) which means that this 
-    // step only gives the sign for the frequency shift array
-    // w[i] = x[i] * s[i]
+
     for (unsigned int i = 0; i < parseSize; i++)
-	Complex::multiplyF(modulated[i],(*frequencyShift)[i],inData[i / 8] ? 1.0 : -1.0);
+	Complex::multiplyF(modulated[i],(*frequencyShift)[i / oversample],inData[i / oversample] ? 1.0 : -1.0);
+
+    // Fill the leftover data with 0.01
+    // power ramp requirement
+    for (unsigned int i = parseSize;i < modulated.length();i++)
+	modulated[i].set(0.01,0);
 
     // Convolve the obtained array with Laurent pulse approximation array
     return getConvolution(modulated,*laurentPulseAproximation);
@@ -311,7 +329,7 @@ void SignalProcessing::buildSinusoids()
 
     unsigned int outLen = BITS_PER_TIMESLOT * m_oversample;
     for (int i = 0;i < (int)m_arfcns;i++) {
-	float exp = 2 * PI * (((4 * i - 6) * 100000) / (m_oversample * GSM_SYMBOL_RATE));
+	float exp = -2.0F * PI * ((float)((4.0F * i - 6.0F) * 100000.0F) / ((float)m_oversample * GSM_SYMBOL_RATE));
 	m_sinusoids[i].assign(outLen);
 	for (unsigned int j = 0;j < outLen;j++) {
 	    Complex::exp(m_sinusoids[i][j],0,-exp*j);
