@@ -40,6 +40,8 @@
 #define DBGFUNC_TRXOBJ(func,obj) {}
 #endif
 
+#define FILLER_FRAMES 102
+
 // Dump data when entering in qmf() function
 //#define TRANSCEIVER_DUMP_QMF_IN
 // Dump data after applying QMF frequency shifting
@@ -94,6 +96,7 @@ protected:
 
 ObjList TrxWorker::s_threads;
 Mutex TrxWorker::s_mutex(false,"TrxWorkers");
+String s_dummyBurstContent = "0000000001111101101110110000010100100111000001001000100000001111100011100010111000101110001010111010010100011001100111001111010011111000100101111101010000";
 
 const TokenDict TrxWorker::s_name[] = {
     {"ARFCNData",     ARFCNData},
@@ -294,7 +297,7 @@ enum Command
     CmdPowerOn,
     CmdPowerOff,
     CmdCustom,
-    CmdManageTx,
+    CmdManageTx
 };
 
 static const TokenDict s_cmdName[] = {
@@ -695,14 +698,20 @@ int TransceiverSockIface::writeSocket(const void* buf, unsigned int len,
 	int r = m_socket.sendTo(buf,len,m_remote);
 	if (r > 0) {
 #ifdef TRANSCEIVER_DEBUG_SOCKET
-	    String tmp;
-	    if (m_text)
-		tmp.assign((const char*)buf,len);
-	    else
-		tmp.hexify((void*)buf,len,' ');
-	    Debug(&dbg,DebugAll,"%sSocket(%s) sent %u bytes: %s [%p]",
-		dbg.prefix(),name().c_str(),len,tmp.c_str(),&dbg);
+	    bool dump = true;
+#else
+	    bool dump = m_printOne;
 #endif
+	    if (dump) {
+		m_printOne = false;
+		String tmp;
+		if (m_text)
+		    tmp.assign((const char*)buf,len);
+		else
+		    tmp.hexify((void*)buf,len,' ');
+		Debug(&dbg,DebugAll,"%sSocket(%s) sent %u bytes: %s [%p]",
+		    dbg.prefix(),name().c_str(),len,tmp.c_str(),&dbg);
+	    }
 	    return len;
 	}
 	if (thShouldExit(dbg.transceiver()))
@@ -720,7 +729,6 @@ int TransceiverSockIface::writeSocket(const void* buf, unsigned int len,
     return m_socket.canRetry() ? 0 : -1;
 }
 
-
 //
 // Transceiver
 //
@@ -736,23 +744,32 @@ Transceiver::Transceiver(const char* name)
     m_burstMinPower(0),
     m_arfcn(0),
     m_arfcnCount(0),
+    m_arfcnConf(0),
     m_clockIface("clock"),
     m_startTime((uint32_t)Random::random()),
     m_clockUpdMutex(false,"TrxClockUpd"),
     m_txLatency(2),
     m_fillers(0),
-    m_fillerMaxFrames(100),
+    m_fillerMaxFrames(FILLER_FRAMES),
     m_tsc(0),
     m_rxFreq(0),
     m_txFreq(0),
     m_freqOffset(0),
     m_txPower(-10),
     m_txAttnOffset(0),
+    m_alterSend(0),
+    m_txTestBurst(0),
+    m_testMutex(false,"txTest"),
+    m_dumpOneTx(false),
+    m_dumpOneRx(false),
     m_error(false),
     m_exiting(false)
 {
     setTransceiver(*this,name);
     DDebug(this,DebugAll,"Transceiver() [%p]",this);
+    DataBlock data((void*)s_dummyBurstContent.c_str(),s_dummyBurstContent.length());
+    m_dummyTxBurst = GSMTxBurst::get(data, data.length());
+    m_dummyTxBurst->setDummy();
 }
 
 Transceiver::~Transceiver()
@@ -765,6 +782,7 @@ Transceiver::~Transceiver()
     // resetARFCNs will set it to 0.
     resetARFCNs();
     TelEngine::destruct(m_radio);
+    TelEngine::destruct(m_dummyTxBurst);
 }
 
 // Initialize the transceiver. This method should be called after construction
@@ -789,13 +807,22 @@ bool Transceiver::init(RadioIface* radio, const NamedList& params)
 	m_oversamplingRate = getUInt(params,"oversampling");
 	setBurstMinPower(params.getDoubleValue(YSTRING("burst_min_power")));
 	unsigned int arfcns = getUInt(params,"arfcns");
+	m_arfcnConf = getUInt(params,"conf_arfcns");
 	const String* rAddr = params.getParam(YSTRING("remoteaddr"));
 	m_fillerMaxFrames = params.getIntValue(YSTRING("filler_frames"),m_fillerMaxFrames);
+	if (m_fillerMaxFrames < FILLER_FRAMES) {
+	    Debug(this,DebugConf,"filler_frames must be at least %d!",FILLER_FRAMES);
+	    m_fillerMaxFrames = FILLER_FRAMES;
+	}
 	unsigned int tableSize = arfcns * m_fillerMaxFrames * 8;
 	m_fillers = new GSMTxBurst*[tableSize];
-	for (unsigned int i = 0; i < tableSize; i++)
-	    m_fillers[i] = 0;
+	unsigned int arfcn0Fillers = m_fillerMaxFrames * 8;
+	for (unsigned int i = 0; i < arfcn0Fillers; i++)
+	    m_fillers[i] = m_dummyTxBurst;
+	for (unsigned int i = arfcn0Fillers; i < tableSize; i++)
+	    m_fillers[i] = GSMTxBurst::getZeroBurst();
 	m_signalProcessing.initialize(m_oversamplingRate,arfcns);
+
 	int port = rAddr ? params.getIntValue(YSTRING("port")) : 0;
 	const char* lAddr = rAddr ? params.getValue(YSTRING("localaddr"),*rAddr) : 0;
 	if (rAddr &&
@@ -831,7 +858,7 @@ bool Transceiver::init(RadioIface* radio, const NamedList& params)
 void Transceiver::reInit(const NamedList& params)
 {
     m_txAttnOffset = params.getIntValue(YSTRING("TxAttenOffset"),0,0,100);
-    m_freqOffset = params.getIntValue(YSTRING("RadioFrequencyOffset"),128,96,160);
+    m_freqOffset = params.getIntValue(YSTRING("RadioFrequencyOffset"),128,64,192);
     setDebugLevel(this,params.getParam(YSTRING("debug_level")));
     setDebugLevel(m_radio,params.getParam(YSTRING("debug_radio_level")));
 }
@@ -850,6 +877,17 @@ void Transceiver::recvRadioData(RadioRxData* d)
 	return;
     XDebug(this,DebugAll,"Enqueueing radio data (%p) TN=%u FN=%u len=%u [%p]",
 	d,d->m_time.tn(),d->m_time.fn(),d->m_data.length(),this);
+
+    if (m_dumpOneRx) { // For TEST purposes
+	m_dumpOneRx = false;
+	String x;
+	for (unsigned int i = 0;i < d->m_data.length();i++) {
+	    d->m_data[i].dump(x);
+	    x << " ";
+	}
+	printf("%s",x.c_str());
+    }
+
     if (m_rxQueue.add(d,this))
 	return;
     if (!thShouldExit(this))
@@ -871,6 +909,7 @@ void Transceiver::runRadioDataProcess()
     TelEngine::destruct(gen);
 }
 
+/*
 void Transceiver::runRadioSendData()
 {
     if (!m_radio)
@@ -908,7 +947,7 @@ void Transceiver::runRadioSendData()
 	    Debug(this,DebugMild,
 		"Oversleep in runRadioSendData() with fn %u tn %u, adjusting! (rtime=(%u,%u) max=(%u,%u))",
 		diff.fn(),diff.tn(),rTime.fn(),rTime.tn(),maxSendTime.fn(),maxSendTime.tn());
-	    txTime.advance(diff.fn(),diff.tn());
+	    //txTime.advance(diff.fn(),diff.tn());
 	}
 	while (rTime > txTime) {
 	    if (sendBurst(txTime)) {
@@ -931,6 +970,34 @@ void Transceiver::runRadioSendData()
 	if (!wait)
 	    radioTime = endRadioTime;
     }
+}*/
+
+void Transceiver::runRadioSendData()
+{
+    if (!m_radio)
+	return;
+    waitPowerOn();
+    GSMTime txTime;
+    m_radio->waitSendTx();
+    m_radio->getRadioClock(txTime);
+    // Fill the bladerf buffers with filler data or dummy bursts
+    for (int i = 0;i< 12;i++) {
+	sendBurst(txTime);
+    }
+    while (true) {
+	if (thShouldExit(this))
+	    break;
+	if (txTime > m_nextClockUpdTime && !syncGSMTime())
+	    break;
+
+	if (sendBurst(txTime)) {
+	    txTime.incTn();
+	    m_txTime.incTn();
+	    continue;
+	}
+	fatalError();
+	break;
+    }
 }
 
 void Transceiver::addFillerBurst(GSMTxBurst* burst)
@@ -945,10 +1012,11 @@ void Transceiver::addFillerBurst(GSMTxBurst* burst)
 	return;
     }
     unsigned int tmpFN = burst->time().fn() % m_fillerMaxFrames;
-    unsigned int pos = burst->arfcn() + m_arfcnCount * (tmpFN + m_fillerMaxFrames * burst->time().tn());
+    unsigned int pos = burst->arfcn() * m_fillerMaxFrames * 8 + tmpFN * 8 + burst->time().tn();
     XDebug(this,DebugAll,"Adding filler burst to [%u] [%p], %p",
 	pos,m_fillers[pos], burst);
-    TelEngine::destruct(m_fillers[pos]);
+    if (m_fillers[pos] && !m_fillers[pos]->isDummy())
+	TelEngine::destruct(m_fillers[pos]);
     m_fillers[pos] = burst;
 }
 
@@ -961,7 +1029,7 @@ GSMTxBurst* Transceiver::getFiller(unsigned int arfcn, const GSMTime& time)
 	return 0;
     }
     unsigned int fn = time.fn() % m_fillerMaxFrames;
-    unsigned int pos = arfcn + m_arfcnCount * (fn + m_fillerMaxFrames * time.tn());
+    unsigned int pos = arfcn * m_fillerMaxFrames * 8 + fn * 8 + time.tn();
     XDebug(this,DebugAll,"getFiller for %u returning [%p]",pos,m_fillers[pos]);
     return m_fillers[pos];
 }
@@ -971,7 +1039,7 @@ bool Transceiver::sendBurst(GSMTime& time)
     XDebug(this,DebugAll,"Request send burst time fn:%u tn:%u",time.fn(),time.tn());
     // Extract the expired bursts and add them to the filler table
     for (unsigned int i = 0; i < m_arfcnCount; i++) {
-	ObjList expired;
+	ObjList expired; 
 	m_arfcn[i]->extractExpired(expired,time);
 	ObjList* o = expired.skipNull();
 	if (o)
@@ -995,25 +1063,53 @@ bool Transceiver::sendBurst(GSMTime& time)
 	    burst = getFiller(i,time);
 	    addFiller = false;
 	}
-	if (!burst)
+	if (!burst || (burst->isDummy() && i != 0))
 	    continue;
 	const ComplexArray* transformed = burst->transform(m_signalProcessing);
+
+	if (m_txTestBurst) {
+	    Lock myLock(m_testMutex);
+	    if (m_txTestBurst) {
+		transformed = m_txTestBurst->transform(m_signalProcessing);
+		addFiller = false;
+	    }
+	}
+
 	if (!transformed) {
 	    Debug(this,DebugStub,"Unable to transform GSMTxBurst! Bug??");
 	    if (addFiller)
 		TelEngine::destruct(burst);
 	    continue;
 	}
+
 	toSend.sum(*transformed);
 
 	if (addFiller)
 	    addFillerBurst(burst);
     }
+
 #ifdef XDEBUG
     String dump;
     toSend.dump(dump);
-    //Debug(this,DebugAll,"Send tx data : %s",dump.c_str());
+    Debug(this,DebugAll,"Send tx data : %s",dump.c_str());
 #endif
+    // Start TEST
+    if (m_alterSend) {
+	// Send only the complex sinusoids.
+	ComplexArray toSend1(sendLength);
+	for (unsigned int i = 0; i < m_arfcnCount; i++) {
+	    if (((m_alterSend >> i) & 0x01) == 0)
+		continue;
+	    toSend1.sum(*m_signalProcessing.getSinusoid(i));
+	}
+	return m_radio->sendData(toSend1);
+    } // End TEST
+    if (m_dumpOneTx) {
+	m_dumpOneTx = false;
+	String d;
+	toSend.dump(d);
+	printf("Tx Dump:\n %s\n",d.c_str());
+    }
     return m_radio->sendData(toSend);
 }
 
@@ -1089,7 +1185,7 @@ bool Transceiver::command(const char* str, String* rsp, unsigned int arfcn)
 	syncGSMTime();
 	return false;
     }
-    DDebug(this,DebugAll,"Handling command '%s' arfcn=%u [%p]",str,arfcn,this);
+    Debug(this,DebugAll,"Handling command '%s' arfcn=%u [%p]",str,arfcn,this);
     String cmd;
     String reason;
     String rspParam;
@@ -1146,6 +1242,8 @@ bool Transceiver::command(const char* str, String* rsp, unsigned int arfcn)
 	    str,arfcn,trxStateName(state()),status,
 	    reason.safe(lookup(status,s_cmdErrorName,"failure")),this);
     syncGSMTime();
+    if (!TelEngine::null(rspParam))
+	Debug(this,DebugNote,"CMD RSP %s",rspParam.c_str());
     return buildCmdRsp(rsp,cmd,status,rspParam);
 }
 
@@ -1383,7 +1481,8 @@ void Transceiver::clearFillers()
 	return;
     unsigned int len = m_arfcnCount * m_fillerMaxFrames * 8;
     for (unsigned int i = 0; i < len; i++)
-	TelEngine::destruct(m_fillers[i]);
+	if (!m_fillers[i]->isDummy())
+	    TelEngine::destruct(m_fillers[i]);
     delete[] m_fillers;
 }
 
@@ -1584,6 +1683,75 @@ int Transceiver::handleCmdCustom(String& cmd, String* rspParam, String* reason)
 	else
 	    return CmdEUnkCmd;
 	return CmdEOk;
+    } else if (cmd.startSkip("dumprx ",false)) {
+	if (cmd == YSTRING("complex")) {
+	    m_dumpOneRx= true;
+	    return CmdEOk;
+	}
+	unsigned int arfcn = cmd.toInteger(0);
+	if (arfcn >= m_arfcnCount)
+	    return CmdEUnkCmd;
+	ARFCNSocket* ar = YOBJECT(ARFCNSocket,m_arfcn[arfcn]);
+	if (!ar)
+	    return CmdEUnkCmd;
+	ar->setPrintSocket();
+	return CmdEOk;
+    } else if (cmd.startSkip("freqout ",false)) { 
+	// Sends to output only the frequency shift vectors
+	// "mbts radio freqout 0,1,2,3" summes all ARFCN's frequency shift vectors
+	// and send them to output.
+	ObjList* split = cmd.split(',');
+	if (!split)
+	    return CmdEUnkCmd;
+	m_alterSend = 0;
+	for (ObjList* o = split->skipNull();o;o = o->skipNext()) {
+	    String* s = static_cast<String*>(o->get());
+	    int shift = s->toInteger(), tmp = 1;
+	    if (shift >= 0 && shift < 8)
+		m_alterSend |= (tmp << shift);
+		
+	}
+	TelEngine::destruct(split);
+	
+	return CmdEOk;
+    } else if (cmd.startSkip("freqout")) {
+	m_alterSend = 0;
+	return CmdEOk;
+    } else if (cmd.startSkip("testtxburst "),false) {
+	int increment = 0;
+	if (cmd == YSTRING("10"))
+	    increment = 2;
+	if (cmd == YSTRING("11"))
+	    increment = 1;
+
+	uint8_t testData[154];
+	::memset(testData,0,154);
+
+	for (int i = 6;i < 154 && increment > 0;i += increment)
+	    testData [i] = 1;
+
+	DataBlock d(testData,154,false);
+	Lock myLock(m_testMutex);
+	TelEngine::destruct(m_txTestBurst);
+	m_txTestBurst = GSMTxBurst::get(d,154);
+	return CmdEOk;
+    } else if (cmd.startSkip("testtxburst")) {
+	Lock myLock(m_testMutex);
+	TelEngine::destruct(m_txTestBurst);
+	m_txTestBurst = 0;
+	return CmdEOk;
+    } else if (cmd == YSTRING("dumponetx")) {
+	m_dumpOneTx = true;
+	return CmdEOk;
+    } else if (cmd.startSkip("predefined ",false)) {
+	int min = 0, max = 0, inc = 0;
+	int ret = ::sscanf(cmd.c_str(),"%d %d %d",&min,&max,&inc);
+	if (ret != 3 || min > max)
+	    return CmdEUnkCmd;
+	if (!m_radio)
+	    return CmdEInvalidState;
+	m_radio->setTestData(min,max,inc);
+	return CmdEOk;
     }
     if (m_radio)
 	return m_radio->command(cmd,rspParam,reason);
@@ -1661,6 +1829,7 @@ bool TransceiverQMF::init(RadioIface* radio, const NamedList& params)
     NamedList p(params);
     adjustParam(this,p,YSTRING("oversampling"),8);
     adjustParam(this,p,YSTRING("arfcns"),4);
+    p.addParam("conf_arfcns",params.getValue(YSTRING("arfcns"),"1"));
     return Transceiver::init(radio,p);
 }
 
@@ -1677,6 +1846,7 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
     ARFCN* a = this->arfcn(arfcn);
     if (!a)
 	return false;
+
     const GSMTime& t = b.time();
     unsigned int len = b.m_data.length();
     int bType = ARFCN::burstType(slot,t.fn());
@@ -2205,6 +2375,16 @@ void ARFCN::addBurst(GSMTxBurst* burst)
 	m_expired.insert(burst);
 	return;
     }
+    GSMTime tmpTime = txTime;
+    tmpTime.advance(153,0);
+    if (burst->time() > tmpTime) {
+	uint32_t f;
+	uint8_t n;
+	GSMTime::diff(f,n,burst->time().fn(),burst->time().tn(),txTime.fn(),txTime.tn());
+	Debug(this,DebugNote,"Received burst to far in feature! %d :  %d",f,n);
+	m_expired.insert(burst);
+	return;
+    }
     ObjList* last = &m_txQueue;
     for (ObjList* o = m_txQueue.skipNull();o;o = o->skipNext()) {
 	GSMTxBurst* b = static_cast<GSMTxBurst*>(o->get());
@@ -2264,7 +2444,8 @@ void ARFCN::recvRadioData(RadioRxData* d)
 	return;
     m_rxBursts++;
     if (d->m_data.length() < ARFCN_RXBURST_LEN) {
-	dropRxBurst("invalid length",d->m_time,d->m_data.length(),DebugFail,true,d);
+	TelEngine::destruct(d);
+	//dropRxBurst("invalid length",d->m_time,d->m_data.length(),DebugFail,true,d);
 	return;
     }
     if (transceiver() &&
@@ -2521,6 +2702,8 @@ void ARFCNSocket::runReadDataSocket()
 	GSMTxBurst* burst = GSMTxBurst::get(m_data.m_readBuffer,r);
 	if (!burst)
 	    continue;
+	if (!burst)
+	    continue;
 	burst->arfcn(arfcn());
 	burst->transform(transceiver()->signalProcessing());
 	addBurst(burst);
@@ -2617,7 +2800,7 @@ bool RadioIface::init(const NamedList& params)
     m_txErrors.init(m,b);
     // NOTE: A frame has 156.25 symbols so 8 timeslots = 1250 symbols
     m_rxData.resetInt16(initialReadTs(),1250 * m_samplesPerSymbol);
-    m_txData.resetInt16(initialWriteTs(),1250 * m_samplesPerSymbol);
+    m_txData.resetInt16(initialWriteTs(),1250* 2);
 #ifdef DEBUG
     if (debugAt(DebugAll)) {
 	String tmp;
@@ -2780,14 +2963,20 @@ uint64_t RadioIface::initialWriteTs()
 }
 
 // Energize a float value
-static inline float energize(float cv)
+static inline float energize(float cv, float div)
 {
-    static float s_energizer = 32767; // 2^15 - 1
+    
+    if (div != 1)
+	cv *= div;
+    static unsigned int s_energizer = 2047; // 2^11 - 1
+    float ret = 0;
     if (cv >= 1)
-	return s_energizer;
-    if (cv <= -1)
-	return -s_energizer;
-    return cv * s_energizer;
+	ret = s_energizer;
+    else if (cv <= -1)
+	ret = -s_energizer;
+    else
+	ret = cv * s_energizer;
+    return ret;
 }
 
 // Send data to radio
@@ -2800,6 +2989,8 @@ bool RadioIface::sendData(const ComplexArray& data)
     if (!(c && len))
 	return true;
     float f = m_txPowerScale;
+    f /= (transceiver()->getConfArfcns() * transceiver()->getConfArfcns());
+    bool haveTest = m_testIncrease > 0;
     while (len && m_txData.free()) {
 	// Apply power scaling
 	int16_t* b = m_txData.buffer();
@@ -2808,17 +2999,19 @@ bool RadioIface::sendData(const ComplexArray& data)
 	    n = m_txData.free();
 	len -= n;
 	m_txData.advance(n);
-	if (f == 1.0) {
-	    for (; n; n--, c++) {
-		*b++ = (int16_t)energize(c->real());
-		*b++ = (int16_t)energize(c->imag());
+	for (int i = 0; n; n--, c++,i++) {
+	    if (!haveTest) {
+		*b++ = (int16_t)::round(energize(c->real(),f));
+		*b++ = (int16_t)::round(energize(c->imag(),f));
+		continue;
 	    }
+	    *b++ = m_testValue;
+	    *b++ = m_testValue;
+
+	    m_testValue += m_testIncrease;
+	    if (m_testValue > m_testMax)
+		m_testValue = m_testMin;
 	}
-	else
-	    for (; n; n--, c++) {
-		*b++ = (int16_t)energize(c->real() * f);
-		*b++ = (int16_t)energize(c->imag() * f);
-	    }
 	if (!m_txData.full())
 	    return true;
 	if (!writeRadio(m_txData))

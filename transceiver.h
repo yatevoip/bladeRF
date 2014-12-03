@@ -185,7 +185,8 @@ public:
     inline TransceiverSockIface(const char* name, bool txt = true,
 	unsigned int writeAttempts = 1)
 	: m_readBuffer(0,1500), m_text(txt),
-	m_writeAttempts(writeAttempts ? writeAttempts : 1), m_name(name)
+	m_writeAttempts(writeAttempts ? writeAttempts : 1), m_name(name),
+	m_printOne(false)
 	{}
 
     /**
@@ -246,6 +247,12 @@ public:
 	    }
 	}
 
+    /**
+     * Print one burst sent to the socket.
+     */
+    inline void printOne()
+	{ m_printOne = true; }
+
     Socket m_socket;                     // The socket
     SocketAddr m_local;                  // Socket local address
     SocketAddr m_remote;                 // Socket remote address
@@ -255,6 +262,7 @@ private:
     bool m_text;                         // Text interface
     unsigned int m_writeAttempts;        // Counter for write attempts
     String m_name;
+    bool m_printOne;                     // Test flag used to print one packet sent to socket
 };
 
 
@@ -475,6 +483,13 @@ public:
 	}
 
     /**
+     * Get the number of configured arfcns
+     * @return The number of configured arfcns
+     */
+    inline unsigned int getConfArfcns() const
+	{ return m_arfcnConf; }
+
+    /**
      * Internal fatal error. Set the error flag
      */
     virtual void fatalError();
@@ -530,7 +545,7 @@ protected:
      * ARFCN list changed notification
      */
     virtual void arfcnListChanged();
-
+    
     int m_state;                         // Transceiver state
     Mutex m_stateMutex;                  // Serialize state change
     Thread* m_ctrlReadThread;            // Worker (read control socket(s)) thread
@@ -542,6 +557,7 @@ protected:
     float m_burstMinPower;               // Minimum burst power level to accept
     ARFCN** m_arfcn;                     // ARFCNs list
     unsigned int m_arfcnCount;           // The number of ARFCNs
+    unsigned int m_arfcnConf;            // The number of configured ARFCNs
     TransceiverSockIface m_clockIface;   // Upper layer clock sync socket
     GSMTime m_startTime;                 // Tranceiver start time
     Mutex m_clockUpdMutex;               // Protect clock update and tx time
@@ -549,6 +565,7 @@ protected:
     GSMTime m_txTime;                    // Transmit time
     GSMTime m_txLatency;                 // Transmit latency
     GSMTxBurst** m_fillers;              // Table of filler bursts
+    GSMTxBurst* m_dummyTxBurst;          // Dummy TX burst
     unsigned int m_fillerMaxFrames;      // Maximum number of frames that the filler table should keep
     SignalProcessing m_signalProcessing; // SignalProcessing class initialized for this tranceiver
     unsigned int m_tsc;                  // GSM TSC index
@@ -557,6 +574,12 @@ protected:
     int m_freqOffset;                    // Configured frequency offset
     int m_txPower;                       // Tx power level (in dB)
     int m_txAttnOffset;                  // Tx power level attenuation
+    // Test data
+    int m_alterSend;                     // Flags mask used to send test data.
+    GSMTxBurst* m_txTestBurst;           // Test burst to be sent.
+    Mutex m_testMutex;                   // Mutex used to block the access to test burst
+    bool m_dumpOneTx;                    // Flag used to dump random Tx bursts
+    bool m_dumpOneRx;                    // Flag used to dump random Rx bursts
 
 private:
     // Power on the radio if not already done
@@ -947,6 +970,12 @@ public:
      * @param th Worker thread
      */
     virtual void workerTerminated(Thread* th);
+
+    /**
+     * Set the print socket flag
+     */
+    inline void setPrintSocket()
+	{ m_data.printOne(); }
 
 protected:
     /**
@@ -1380,6 +1409,24 @@ public:
      */
     virtual int command(const String& cmd, String* rspParam = 0, String* reason = 0);
 
+    /**
+     * Set test data limits. Data will be fabricated after formula:
+     * from x = min to x = max : data = (val,val i), val += inc, if (val >= max) val = min
+     * The fabricated data will be sent to bladerf 
+     * NOTE this is for test
+     * @param min The minimum value for input data
+     * @param max The maximum value for input data
+     * @param inc The increment value.
+     * NOTE The data will not be wrapped to 2047
+     */
+    inline void setTestData(int min, int max, int inc)
+    {
+	m_testMin = min;
+	m_testMax = max;
+	m_testIncrease = inc;
+	m_testValue = min;
+    }
+
 protected:
     /**
      * Read data from radio
@@ -1442,6 +1489,11 @@ private:
     GSMTime m_clock;                     // Radio clock
     GSMTime m_txBufferSpace;             // The space available for data sending in radio side
     Semaphore m_txSynchronizer;          // Semaphore used to synchronize the receive / send data
+    // Test data
+    int m_testMin;                       // Minimum value for imput data
+    int m_testMax;                       // Maximum value for input data
+    int m_testIncrease;                  // Increment value
+    int m_testValue;                     // Current input data value
 };
 
 }; // namespace TelEngine
