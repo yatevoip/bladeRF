@@ -29,7 +29,7 @@ namespace TelEngine {
 
 class SigProcUtils;                      // Utility functions
 class Complex;                           // A Complex (float) number
-template <class Obj> class SigProcVector;// Basic vector template
+template <class Obj,bool> class SigProcVector;// Basic vector template
 class ComplexArray;                      // A Complex array
 
 #define GSM_SYMBOL_RATE 13e6/48 // 13 * 10^6 / 48
@@ -50,12 +50,23 @@ public:
      * @param len Destination buffer length
      * @param src Pointer to data to copy
      * @param n The number of bytes to copy
-     * @param objLen Object (element) size in bytes
+     * @param objSize Object (element) size in bytes
      * @param offs Optional offset in destination
      * @return The number of elements copied
      */
     static unsigned int copy(void* dest, unsigned int len,
 	const void* src, unsigned int n,
+	unsigned int objSize = 1, unsigned int offs = 0);
+
+    /**
+     * Reset memory (set to 0)
+     * @param buf The buffer
+     * @param len Buffer length
+     * @param objSize Object (element) size in bytes
+     * @param offs Optional offset in buffer
+     * @return The number of processed elements
+     */
+    static unsigned int bzero(void* buf, unsigned int len,
 	unsigned int objSize = 1, unsigned int offs = 0);
 };
 
@@ -156,9 +167,17 @@ public:
     inline Complex& operator-=(const Complex& c)
 	{ return diff(*this,*this,c); }
 
+    inline Complex& operator*=(float f)
+	{ return multiplyF(*this,*this,f); }
+
     inline Complex operator*(const Complex& c) const {
 	    Complex tmp;
 	    return multiply(tmp,*this,c);
+	}
+
+    inline Complex operator*(float f) const {
+	    Complex tmp(*this);
+	    return (tmp *= f);
 	}
 
     inline Complex operator+(const Complex& c) const { 
@@ -382,8 +401,9 @@ private:
  * NOTE: This template won't work for objects holding pointers,
  *  it copies data using raw memory copy
  * @short Basic vector template
+ * @param basicType True for basic types (i.e. float, int ...), false for struct/class objects
  */
-template <class Obj> class SigProcVector
+template <class Obj, bool basicType> class SigProcVector
 {
 public:
     /**
@@ -417,7 +437,7 @@ public:
      * Constructor from another array
      * @param other Array to copy
      */
-    inline SigProcVector(const SigProcVector<Obj>& other)
+    inline SigProcVector(const SigProcVector<Obj,basicType>& other)
 	: m_data(0), m_length(0)
 	{ *this = other; }
 
@@ -479,8 +499,11 @@ public:
 	    if (!len)
 		return;
 	    m_data = new Obj[len];
-	    if (m_data)
+	    if (m_data) {
 		m_length = len;
+		if (basicType)
+		    SigProcUtils::bzero(m_data,m_length,sizeof(Obj));
+	    }
 	    else
 		Debug("SigProcVector",DebugFail,
 		    "Failed to allocate len=%u obj_size=%u [%p]",
@@ -501,7 +524,7 @@ public:
      * Take another array's data
      * @param other Array to steal data from
      */
-    inline void steal(SigProcVector<Obj>& other) {
+    inline void steal(SigProcVector<Obj,basicType>& other) {
 	    clear();
 	    m_data = other.data();
 	    m_length = other.length();
@@ -529,7 +552,7 @@ public:
      * @param other Array to set from
      * @return This array's address
      */
-    inline SigProcVector<Obj>& operator=(const SigProcVector<Obj>& other) {
+    inline SigProcVector<Obj,basicType>& operator=(const SigProcVector<Obj,basicType>& other) {
 	    assign(other.length());
 	    copy(other.data(),other.length());
 	    return *this;
@@ -541,7 +564,9 @@ private:
 };
 
 
-typedef SigProcVector<Complex> ComplexVector;
+typedef SigProcVector<Complex,false> ComplexVector;
+typedef SigProcVector<float,true> FloatVector;
+typedef SigProcVector<int,true> IntVector;
 
 
 /**
@@ -618,9 +643,6 @@ public:
     inline void dump(String& dest, const char* sep = " ") const
 	{ Complex::dump(dest,data(),length(),sep); }
 };
-
-
-typedef SigProcVector<float> FloatVector;
 
 
 class SignalProcessing

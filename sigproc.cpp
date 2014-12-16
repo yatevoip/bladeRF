@@ -352,4 +352,15 @@ unsigned int SigProcUtils::copy(void* dest, unsigned int len, const void* src,
     return n;
 }
 
+// Reset memory (set to 0)
+unsigned int SigProcUtils::bzero(void* buf, unsigned int len,
+    unsigned int objSize, unsigned int offs)
+{
+    if (!(buf && len && objSize) || offs >= len)
+	return 0;
+    len = sigProcMin(len,len - offs);
+    ::memset(((uint8_t*)buf) + offs * objSize,0,len * objSize);
+    return len;
+}
+
 /* vi: set ts=8 sw=4 sts=4 noet: */
