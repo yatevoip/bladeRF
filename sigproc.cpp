@@ -32,6 +32,11 @@ static inline unsigned int sigProcMin(unsigned int v1, unsigned int v2)
     return (v1 <= v2) ? v1 : v2;
 }
 
+static inline unsigned int safeStrLen(const char* str)
+{
+    return (!TelEngine::null(str)) ? (unsigned int)::strlen(str) : 0;
+}
+
 
 //
 // Complex
@@ -361,6 +366,61 @@ unsigned int SigProcUtils::bzero(void* buf, unsigned int len,
     len = sigProcMin(len,len - offs);
     ::memset(((uint8_t*)buf) + offs * objSize,0,len * objSize);
     return len;
+}
+
+// Copy string, advance dest and src, return src
+static inline const char* copyInc(char*& dest, const char* src, unsigned int n)
+{
+    ::strncpy(dest,src,n);
+    dest += n;
+    return src + n;
+}
+
+String& SigProcUtils::appendSplit(String& buf, const String& str, unsigned int lineLen,
+    unsigned int offset, const char* linePrefix, const char* suffix)
+{
+    if (TelEngine::null(linePrefix))
+	linePrefix = suffix;
+    unsigned int len = str.length();
+    unsigned int linePrefLen = safeStrLen(linePrefix);
+    // No lines ?
+    if (!(lineLen && len && linePrefLen) || lineLen >= len) {
+	buf << str << suffix;
+	return buf;
+    }
+    unsigned int firstLineLen = 0;
+    if (offset && offset < lineLen) {
+	firstLineLen = sigProcMin(len,lineLen - offset);
+	len -= firstLineLen;
+	// Nothing to be added after first line ?
+	if (!len) {
+    	    buf << str << suffix;
+	    return buf;
+	}
+    }
+    unsigned int nFullLines = len / lineLen;
+    unsigned int lastLineLen = len % lineLen;
+    unsigned int suffixLen = safeStrLen(suffix);
+    unsigned int nSep = nFullLines + (lastLineLen ? 1 : 0);
+    char* tmpBuf = new char[str.length() + nSep * linePrefLen + suffixLen + 1];
+    char* dest = tmpBuf;
+    const char* src = str.c_str();
+    if (firstLineLen)
+	src = copyInc(dest,src,firstLineLen);
+    for (; nFullLines; nFullLines--) {
+	copyInc(dest,linePrefix,linePrefLen);
+	src = copyInc(dest,src,lineLen);
+    }
+    if (lastLineLen) {
+	copyInc(dest,linePrefix,linePrefLen);
+	src = copyInc(dest,src,lastLineLen);
+    }
+    if (suffixLen)
+	copyInc(dest,suffix,suffixLen);
+    *dest = 0;
+    buf << tmpBuf;
+    delete[] tmpBuf;
+    return buf;
 }
 
 /* vi: set ts=8 sw=4 sts=4 noet: */

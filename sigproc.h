@@ -68,6 +68,22 @@ public:
      */
     static unsigned int bzero(void* buf, unsigned int len,
 	unsigned int objSize = 1, unsigned int offs = 0);
+	
+    /**
+     * Split a string and append lines to another one
+     * @param buf Destination string
+     * @param str Input string
+     * @param lineLen Line length, characters to copy
+     * @param offset Offset in first line (if incomplete). No data will be
+     *  added on first line if offset is greater then line length
+     * @param linePrefix Prefix for new lines.
+     *  Set it to empty string or 0 to use the suffix
+     * @param suffix End of line for the last line
+     * @return Destination string address
+     */
+    static String& appendSplit(String& buf, const String& str, unsigned int lineLen,
+	unsigned int offset = 0, const char* linePrefix = 0,
+	const char* suffix = "\r\n");
 };
 
 
@@ -469,6 +485,13 @@ public:
 	{ return m_length; }
 
     /**
+     * Retrieve array size in bytes (length() * sizeof(Obj))
+     * @return Array size in bytes
+     */
+    inline unsigned int size() const
+	{ return length() * sizeof(Obj); }
+
+    /**
      * Clear the array
      */
     inline void clear(bool del = true) {
@@ -556,6 +579,86 @@ public:
 	    assign(other.length());
 	    copy(other.data(),other.length());
 	    return *this;
+	}
+
+    /**
+     * Dump this array to a string
+     * @param buf Destination string
+     * @param func Pointer to function who appends the object to a String
+     * @param sep Array elements separator
+     * @return Destination string address
+     */
+    String& dump(String& buf,
+	String& (*func)(String& dest, const Obj& item, const char* sep),
+	const char* sep = ",") const {
+	    if (!(func && length()))
+		return buf;
+	    String localBuf;
+	    const Obj* v = data();
+	    for (unsigned int n = length(); n; n--, v++)
+		(*func)(localBuf,*v,sep);
+	    return buf.append(localBuf);
+	}
+
+    /**
+     * Dump this array to string, split it and append lines to a buffer
+     * @param buf Destination string
+     * @param func Pointer to function who append the object to a String
+     *  This parameter is required
+     * @param offset Offset in first line (if incomplete). No data will be
+     *  added on first line if offset is greater then line length
+     * @param linePrefix Prefix for new lines.
+     *  Set it to empty string or 0 to use the suffix
+     * @param suffix String to always add to final result
+     * @param sep Array elements separator
+     * @return Destination string address
+     */
+    String& appendSplit(String& buf, unsigned int lineLen,
+	String& (*func)(String& dest, const Obj& item, const char* sep),
+	unsigned int offset = 0, const char* linePrefix = 0,
+	const char* suffix = "\r\n", const char* sep = ",") const {
+	    if (!func)
+		return buf;
+	    if (TelEngine::null(linePrefix))
+		linePrefix = suffix;
+	    if (!lineLen || TelEngine::null(linePrefix)) {
+		dump(buf,func,sep);
+		return buf.append(suffix);
+	    }
+	    String localBuf;
+	    const Obj* v = data();
+	    for (unsigned int n = length(); n; n--, v++) {
+		String tmp;
+		(*func)(tmp,*v,0);
+		if (n > 1)
+		    tmp << sep;
+		offset += tmp.length();
+		if (offset > lineLen) {
+		    localBuf << linePrefix;
+		    offset = tmp.length();
+		}
+		localBuf << tmp;
+	    }
+	    return buf.append(localBuf.append(suffix));
+	}
+
+    /**
+     * Hexify data, split it and append lines to a string
+     * @param buf Destination string
+     * @param lineLen Line length, characters to copy
+     * @param offset Offset in first line (if incomplete). No data will be
+     *  added on first line if offset is greater then line length
+     * @param linePrefix Prefix for new lines.
+     *  Set it to empty string or 0 to use the suffix
+     * @param suffix End of line for the last line
+     * @return Destination string address
+     */
+    inline String& appendSplitHex(String& buf, unsigned int lineLen,
+	unsigned int offset = 0, const char* linePrefix = 0,
+	const char* suffix = "\r\n") const {
+	    String hex;
+	    return SigProcUtils::appendSplit(buf,hex.hexify((void*)data(),size()),
+		lineLen,offset,linePrefix,suffix);
 	}
 
 private:
