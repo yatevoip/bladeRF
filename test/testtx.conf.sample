@@ -1,0 +1,44 @@
+; This file configures transceiver transmission test
+
+[general]
+
+; arfcns: integer: The number of ARFCNs
+; Interval 1..4. Defaults to 4
+; The value will be clamped to interval bounds
+;arfcns=4
+
+; oversampling: integer: Tx oversampling
+; Interval 1..8. Defaults to 8
+; The value will be clamped to interval bounds
+;oversampling=8
+
+; arfcn0, arfcn1 ...: string: ARFCN input bits (length=148)
+; Values:
+;  true: all 1
+;  false: all 0
+;  filler: Input is a filler
+;  bits sequence
+; Defaults to all 1
+;arfcn0=
+
+
+[output]
+; This section configures the output
+
+; dump_str: boolean: Dump array data as string
+; Defaults to enable
+;dump_str=enable
+
+; dump_hex: boolean: Dump array data hexified buffer
+; Defaults to disable
+;dump_hex=enable
+
+; line_length: integer: Array data line length
+; This parameter configures data arrays output line length
+; Interval 40..1000. 
+; Set it to 0 to disable it
+; The value will be clamped to interval bounds if not 0
+;line_length=120
+
+; conf_file_style: boolean: Add configuration file line continuator
+;conf_file_style=enable

@@ -7,7 +7,7 @@ INCFILES := transceiver.h
 LOCALLIBS := -lyate $(GSM_LIBS)
 
 PROGS_BRF := transceiver-bladerf
-PROGS_TESTS := transceiver-test
+PROGS_TESTS := transceiver-test transceiver-testtx
 
 ifneq (@HAVE_BRF@,no)
 FILES := $(FILES) bladerf/firmware.img bladerf/hostedx40.rbf bladerf/hostedx115.rbf
@@ -35,3 +35,6 @@ transceiver-bladerf: bladerf/bladerf.cpp main.o $(MKDEPS) $(INCFILES) $(LIBS) $(
 
 transceiver-test: test/test.cpp main.o $(MKDEPS) $(INCFILES) $(LIBS) $(LIBDEPS)
 	$(COMPILE) -o $@ $(LOCALFLAGS) $< main.o $(LIBS) $(LDFLAGS) $(LOCALLIBS) $(LIBTHR)
+
+transceiver-testtx: test/testtx.cpp $(MKDEPS) $(INCFILES) $(LIBS) $(LIBDEPS)
+	$(COMPILE) -o $@ $(LOCALFLAGS) $< $(LIBS) $(LDFLAGS) $(LOCALLIBS) $(LIBTHR)
