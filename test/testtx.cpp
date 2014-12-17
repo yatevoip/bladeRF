@@ -199,7 +199,7 @@ static String& dumpVector(String& dest, FloatVector& v,
     if (*dumpStr) {
 	first = addPName(dest,pName,"_str=");
 	if (!s_lineLen)
-	    v.dump(dest,appendFloat);
+	    v.dump(dest,appendFloat) += "\r\n";
 	else
 	    v.appendSplit(dest,s_lineLen,appendFloat,first,s_linePrefix);
     }
@@ -221,7 +221,7 @@ static String& dumpVector(String& dest, ComplexVector& v,
     if (*dumpStr) {
 	first = addPName(dest,pName,"_str=");
 	if (!s_lineLen)
-	    v.dump(dest,appendComplex);
+	    v.dump(dest,appendComplex) += "\r\n";
 	else
 	    v.appendSplit(dest,s_lineLen,appendComplex,first,s_linePrefix);
     }
@@ -244,7 +244,7 @@ static String& dumpVector(String& dest, UInt8Vector& v,
     if (*dumpStr) {
 	first = addPName(dest,pName,"_str=");
 	if (!s_lineLen)
-	    v.dump(dest,appendUInt8,sep);
+	    v.dump(dest,appendUInt8,sep) += "\r\n";
 	else
 	    v.appendSplit(dest,s_lineLen,appendUInt8,first,s_linePrefix,"\r\n",sep);
     }
@@ -604,7 +604,7 @@ extern "C" int main(int argc, const char** argv, const char** envp)
 	s_linePrefix = "\\\r\n  ";
     else
 	s_linePrefix = "\r\n  ";
-    s_lineLen = (unsigned int)out->getIntValue("line_len",120,0,1000);
+    s_lineLen = (unsigned int)out->getIntValue("line_length",120,0,1000);
     if (s_lineLen) {
 	if (s_lineLen < 40)
 	    s_lineLen = 40;
