@@ -51,6 +51,7 @@
 // Dump input data on ARFCN process start / exit
 //#define TRANSCEIVER_DUMP_ARFCN_PROCESS_IN
 //#define TRANSCEIVER_DUMP_ARFCN_PROCESS_OUT
+//#define TRANSCEIVER_DUMP_RX_DEBUG
 
 
 // Minimum data length for radio Rx burst to be processed by an ARFCN
@@ -553,13 +554,18 @@ void TransceiverObj::setTransceiver(Transceiver& t, const char* name)
 
 // Dump to output a received burst
 void TransceiverObj::dumpRecvBurst(const char* str, const GSMTime& time,
-    const Complex* c, unsigned int len)
+    const Complex* c, unsigned int len, bool dumpShort)
 {
+    if (!debugAt(DebugAll))
+	return;
     String tmp;
     Complex::dump(tmp,c,len);
-    Debug(this,DebugAll,"%s%s TN=%u FN=%u len=%u:%s [%p]",
-	prefix(),TelEngine::c_safe(str),time.tn(),time.fn(),len,
-	tmp.safe(),this);
+    if (!dumpShort)
+	Debug(this,DebugAll,"%s%s TN=%u FN=%u len=%u:%s [%p]",
+	    prefix(),TelEngine::c_safe(str),time.tn(),time.fn(),len,
+	    tmp.safe(),this);
+    else
+	::printf("\n%s:%s\n",str,tmp.safe());
 }
 
 
@@ -693,6 +699,21 @@ int TransceiverSockIface::writeSocket(const void* buf, unsigned int len,
 {
     if (!(buf && len))
 	return 0;
+
+#ifdef TRANSCEIVER_DUMP_RX_DEBUG
+    if (dbg.debugAt(DebugAll) && !m_text) {
+	String dumprx;
+	const uint8_t* b = (const uint8_t*)buf;
+	for (unsigned int i = 0;i < len;i++)
+	    dumprx << b[i] << ", ";
+	int arfcnIndex = -1;
+	ARFCN* arfcn = YOBJECT(ARFCN,&dbg);
+	if (arfcn)
+	    arfcnIndex = arfcn->arfcn();
+	::printf("\noutput-data:%d:%s\n",arfcnIndex,dumprx.c_str());
+    }
+#endif
+
     // NOTE: Handle partial write for stream sockets
     for (unsigned int i = 0; i < m_writeAttempts; i++) {
 	int r = m_socket.sendTo(buf,len,m_remote);
@@ -885,9 +906,17 @@ void Transceiver::recvRadioData(RadioRxData* d)
 	    d->m_data[i].dump(x);
 	    x << " ";
 	}
-	printf("%s",x.c_str());
+	printf("\n%s\n",x.c_str());
     }
 
+#ifdef TRANSCEIVER_DUMP_RX_DEBUG
+    if (debugAt(DebugAll)) {
+	String dumprx;
+	for (unsigned int i = 0;i < d->m_data.length();i++)
+	    d->m_data[i].dump(dumprx);
+	::printf("\ninput-data:%s\n",dumprx.c_str());
+    }
+#endif
     if (m_rxQueue.add(d,this))
 	return;
     if (!thShouldExit(this))
@@ -977,22 +1006,23 @@ void Transceiver::runRadioSendData()
     if (!m_radio)
 	return;
     waitPowerOn();
-    GSMTime txTime;
     m_radio->waitSendTx();
-    m_radio->getRadioClock(txTime);
+    m_radio->getRadioClock(m_txTime);
     // Fill the bladerf buffers with filler data or dummy bursts
     for (int i = 0;i< 12;i++) {
-	sendBurst(txTime);
+	sendBurst(m_txTime);
     }
     while (true) {
 	if (thShouldExit(this))
 	    break;
-	if (txTime > m_nextClockUpdTime && !syncGSMTime())
+	if (m_txTime > m_nextClockUpdTime && !syncGSMTime())
 	    break;
 
-	if (sendBurst(txTime)) {
-	    txTime.incTn();
-	    m_txTime.incTn();
+	if (sendBurst(m_txTime)) {
+	    if (m_radio->loopback())
+		m_radio->getRadioClock(m_txTime);
+	    else
+		m_txTime.incTn();
 	    continue;
 	}
 	fatalError();
@@ -1042,7 +1072,7 @@ bool Transceiver::sendBurst(GSMTime& time)
 	ObjList expired; 
 	m_arfcn[i]->extractExpired(expired,time);
 	ObjList* o = expired.skipNull();
-	if (o)
+	if (o && m_radio && !m_radio->loopback())
 	    Debug(this,DebugNote,"ARFCN %u: %d bursts expired! Time fn:%u tn:%u",
 		i,expired.count(),time.fn(),time.tn());
 	for (; o; o = o->skipNull()) {
@@ -1067,7 +1097,7 @@ bool Transceiver::sendBurst(GSMTime& time)
 	    continue;
 	const ComplexArray* transformed = burst->transform(m_signalProcessing);
 
-	if (m_txTestBurst) {
+	if (m_txTestBurst && i == 0) {
 	    Lock myLock(m_testMutex);
 	    if (m_txTestBurst) {
 		transformed = m_txTestBurst->transform(m_signalProcessing);
@@ -1096,13 +1126,14 @@ bool Transceiver::sendBurst(GSMTime& time)
     // Start TEST
     if (m_alterSend) {
 	// Send only the complex sinusoids.
-	ComplexArray toSend1(sendLength);
+	for (unsigned int i = 0;i < toSend.length();i++)
+	    toSend[i].set(0,0);
+
 	for (unsigned int i = 0; i < m_arfcnCount; i++) {
 	    if (((m_alterSend >> i) & 0x01) == 0)
 		continue;
-	    toSend1.sum(*m_signalProcessing.getSinusoid(i));
+	    toSend.sum(*m_signalProcessing.getSinusoid(i));
 	}
-	return m_radio->sendData(toSend1);
     } // End TEST
     if (m_dumpOneTx) {
 	m_dumpOneTx = false;
@@ -1666,6 +1697,7 @@ int Transceiver::handleCmdSetGain(bool rx, String& cmd, String* rspParam)
 // Handle CUSTOM command. Return status code
 int Transceiver::handleCmdCustom(String& cmd, String* rspParam, String* reason)
 {
+    DDebug(this,DebugAll,"Handle custom cmd %s",cmd.c_str());
     if (cmd.startSkip("debug")) {
 	DebugEnabler* dbg = this;
 	if (cmd.startSkip("radio")) {
@@ -1717,25 +1749,27 @@ int Transceiver::handleCmdCustom(String& cmd, String* rspParam, String* reason)
     } else if (cmd.startSkip("freqout")) {
 	m_alterSend = 0;
 	return CmdEOk;
-    } else if (cmd.startSkip("testtxburst "),false) {
+    } else if (cmd.startSkip("testtxburst ",false)) {
 	int increment = 0;
 	if (cmd == YSTRING("10"))
 	    increment = 2;
 	if (cmd == YSTRING("11"))
 	    increment = 1;
 
-	uint8_t testData[154];
-	::memset(testData,0,154);
+	DataBlock d(0,154);
+	uint8_t* testData = (uint8_t*)d.data();
 
 	for (int i = 6;i < 154 && increment > 0;i += increment)
 	    testData [i] = 1;
 
-	DataBlock d(testData,154,false);
 	Lock myLock(m_testMutex);
 	TelEngine::destruct(m_txTestBurst);
 	m_txTestBurst = GSMTxBurst::get(d,154);
+	if (!m_txTestBurst)
+	    return CmdEUnkCmd;
 	return CmdEOk;
     } else if (cmd.startSkip("testtxburst")) {
+	
 	Lock myLock(m_testMutex);
 	TelEngine::destruct(m_txTestBurst);
 	m_txTestBurst = 0;
@@ -1752,7 +1786,21 @@ int Transceiver::handleCmdCustom(String& cmd, String* rspParam, String* reason)
 	    return CmdEInvalidState;
 	m_radio->setTestData(min,max,inc);
 	return CmdEOk;
+    } else if (cmd.startSkip("internal-loopback ",false)) {
+	if (!m_radio)
+	    return CmdEInvalidState;
+	m_radio->setLoopback(true,cmd.toInteger());
+	return CmdEOk;
+    } else if (cmd.startSkip("internal-loopback",false)) {
+	if (!m_radio)
+	    return CmdEInvalidState;
+	m_radio->setLoopback(false);
+	return CmdEOk;
+    } else if (cmd.startSkip("dump-freq-shift ",false)) {
+	dumpFreqShift(cmd.toInteger());
+	return CmdEOk;
     }
+    
     if (m_radio)
 	return m_radio->command(cmd,rspParam,reason);
     return CmdEUnkCmd;
@@ -1794,7 +1842,7 @@ int Transceiver::handleCmdManageTx(unsigned int arfcn, String& cmd, String* rspP
 //
 TransceiverQMF::TransceiverQMF(const char* name)
     : Transceiver(name),
-    m_halfBandFltCoeffLen(19),
+    m_halfBandFltCoeffLen(23),
     m_tscSamples(26)
 {
     initNormalBurstTSC();
@@ -1894,6 +1942,15 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
     unsigned int xLen = ARFCN_RXBURST_LEN - inIdx;
     for (unsigned int n = chanEstimate.length(); n; n--)
 	Complex::sumMul(*he++,x++,xLen--,s->data(),s->length());
+#ifdef TRANSCEIVER_DUMP_RX_DEBUG
+    if (debugAt(DebugAll)) {
+	String dumpHE;
+	for (unsigned int i = 0;i < chanEstimate.length();i++)
+	    chanEstimate[i].dump(dumpHE);
+	::printf("\ndemod-he:%d:%s\n",arfcn,dumpHE.c_str());
+    }
+#endif
+
     // Demodulate
     // We will use the conjugate of channel estimator array
     Complex::conj(chanEstimate.data(),chanEstimate.length());
@@ -1915,6 +1972,17 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
 	}
 	*w++ = c.real();
     }
+#ifdef TRANSCEIVER_DUMP_RX_DEBUG
+    if (debugAt(DebugAll)) {
+	String dumpU;
+	char cdumpu[50];
+	for (unsigned int i = 0;i < b.m_bitEstimate.length();i++) {
+	    int len = ::sprintf(cdumpu,"%g, ",w[i]);
+	    dumpU.append(cdumpu,len);
+	}
+	::printf("\ndemod-u:%d:%s\n",arfcn,dumpU.c_str());
+    }
+#endif
     // Calculate the power level
     b.m_powerLevel = SignalProcessing::computePower(b.m_bitEstimate.data(),
 	b.m_bitEstimate.length(),5,0.2);
@@ -1933,9 +2001,22 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
     for (w = b.m_bitEstimate.data(); n; n--, w++) {
 	tmpExit << " ";
         tmpExit.append(*w,3);
+	if (n != 1)
+	    tmpExit << ",";
     }
     Debug(a,DebugAll,"%sprocessRadioBurst() exit. power=%g RSSI=%g data:%s [%p]",
 	a->prefix(),b.m_powerLevel,b.m_timingError,tmpExit.c_str(),a);
+#endif
+#ifdef TRANSCEIVER_DUMP_RX_DEBUG
+    if(debugAt(DebugAll)) {
+	String dumpDemodOut;
+	char dodump[50];
+	for (unsigned int i = 0; i < b.m_bitEstimate.length(); i++) {
+	    int dlen = ::sprintf(dodump," %g,",b.m_bitEstimate[i]);
+	    dumpDemodOut.append(dodump,dlen);
+	}
+	::printf("\ndemod-out:%d:%s\n",arfcn,dumpDemodOut.c_str());
+    }
 #endif
     return true;
 }
@@ -1976,7 +2057,7 @@ void TransceiverQMF::radioPowerOnStarting()
 	float* d = m_halfBandFltCoeff.data();
 	for (unsigned int i = 0; i < m_halfBandFltCoeff.length(); i++) {
 	    float offset = (float)i - n0;
-	    float omega = 0.54 - 0.46 * ::cosf(2 * PI * offset / lq_1);
+	    float omega = 0.54 - 0.46 * ::cosf(2 * PI * i / lq_1);
 	    if (offset) {
 		float func = PI / 2 * offset;
 		*d++ = omega * (::sinf(func) / func);
@@ -1984,6 +2065,15 @@ void TransceiverQMF::radioPowerOnStarting()
 	    else
 		*d++ = omega;
 	}
+#ifdef TRANSCEIVER_DUMP_RX_DEBUG
+	String dumphb = "hb:";
+	char cdump[50];
+	for (unsigned int i = 0; i < m_halfBandFltCoeff.length(); i++) {
+	    int dlen = ::sprintf(cdump," %g",m_halfBandFltCoeff[i]);
+	    dumphb.append(cdump,dlen);
+	}
+	::printf("%s",dumphb.c_str());
+#endif
     }
 }
 
@@ -2012,6 +2102,23 @@ void TransceiverQMF::arfcnListChanged()
     Transceiver::arfcnListChanged();
     for (unsigned int i = 0; i < 15; i++)
 	m_qmf[i].chans = false;
+}
+
+void TransceiverQMF::dumpFreqShift(unsigned int index) const
+{
+    if (index > 14) {
+	Debug(this,DebugNote,"Invalid qmf index!");
+	return;
+    }
+    String tmp;
+    char t[100];
+    for (unsigned int i = 0;i < m_qmf[index].freqShift.length();i++) {
+	int l = ::sprintf(t,"%g%+g",m_qmf[index].freqShift[i].real(),m_qmf[index].freqShift[i].imag());
+	tmp.append(t,l);
+	if (i != m_qmf[index].freqShift.length() - 1)
+	    tmp << ",";
+    }
+    printf("\nqmf(%d).fs:%s\n",index,tmp.c_str());
 }
 
 // Process received radio data
@@ -2067,14 +2174,24 @@ void TransceiverQMF::qmf(const GSMTime& time, unsigned int index)
 #ifdef TRANSCEIVER_DUMP_QMF_IN
     String tmp1;
     tmp1 << "QMF[" << index << "] starting";
-    dumpRecvBurst(tmp1,time,crt.data.data(),crt.data.length());
+    dumpRecvBurst(tmp1,time,crt.data.data(),crt.data.length(),false);
+#endif
+#ifdef TRANSCEIVER_DUMP_RX_DEBUG
+    String dump1;
+    dump1 << "qmf" << index << ".x";
+    dumpRecvBurst(dump1,time,crt.data.data(),crt.data.length(),true);
 #endif
     // Frequency shift
     qmfApplyFreqShift(crt);
 #ifdef TRANSCEIVER_DUMP_QMF_FREQSHIFTED
     String tmp2;
     tmp2 << "QMF[" << index << "] applied frequency shifting";
-    dumpRecvBurst(tmp2,time,crt.data.data(),crt.data.length());
+    dumpRecvBurst(tmp2,time,crt.data.data(),crt.data.length(),false);
+#endif
+#ifdef TRANSCEIVER_DUMP_RX_DEBUG
+    String dump2;
+    dump2 << "qmf" << index << ".xp";
+    dumpRecvBurst(dump2,time,crt.data.data(),crt.data.length(),true);
 #endif
     // Forward data to ARFCNs
     if (final) {
@@ -2090,8 +2207,14 @@ void TransceiverQMF::qmf(const GSMTime& time, unsigned int index)
 #ifdef TRANSCEIVER_DUMP_QMF_HALFBANDFILTER
     String tmp3;
     tmp3 << "QMF[" << index << "] built half band filter";
-    dumpRecvBurst(tmp3,time,crt.halfBandFilter.data(),crt.halfBandFilter.length());
+    dumpRecvBurst(tmp3,time,crt.halfBandFilter.data(),crt.halfBandFilter.length(),false);
 #endif
+#ifdef TRANSCEIVER_DUMP_RX_DEBUG
+    String dump3;
+    dump3 << "qmf" << index << ".w";
+    dumpRecvBurst(dump3,time,crt.halfBandFilter.data(),crt.halfBandFilter.length(),true);
+#endif
+    
     if (indexLo >= 0 && !thShouldExit(this)) {
 	qmfBuildOutputLowBand(crt,m_qmf[indexLo].data);
 	qmf(time,indexLo);
@@ -2113,13 +2236,17 @@ void TransceiverQMF::qmfBuildHalfBandFilter(QmfBlock& b)
 {
     if (b.halfBandFilter.length() < b.data.length())
 	b.halfBandFilter.resize(b.data.length() + 10);
+
     unsigned int n0 = (m_halfBandFltCoeff.length() - 1) / 2;
-    unsigned int n0_2 = n0 * 2;
     Complex* x = b.data.data();
     Complex* w = b.halfBandFilter.data();
     float* h = m_halfBandFltCoeff.data();
-    unsigned int rest = b.data.length();
-    for (unsigned int i = 0; rest; ++i, ++w, --rest) {
+    
+    unsigned int rest = b.data.length() / 2;
+    unsigned int n0_2 = n0 * 2;
+    unsigned int i = 0;
+    //w += i;
+    for (; rest; i += 2 , w += 2, --rest) {
 	w->set();
 	int offs = (int)i - (int)n0;
 	unsigned int j = 0;
@@ -2127,11 +2254,8 @@ void TransceiverQMF::qmfBuildHalfBandFilter(QmfBlock& b)
 	// We ignore negative indexes (zero samples): multiplication would be 0 anyway
 	// E.g x[i + 2 * j] is (0,0)
 	// j will start with the number of steps ignored
-	if (offs < 0) {
+	if (offs < 0)
 	    j = ((unsigned int)(-offs) + 1) / 2;
-	    if (j > n0_2)
-		continue;
-	}
 	unsigned int n = (n0_2 - j + 2) / 2;
 	unsigned int bIters = (rest + 1) / 2;
 	if (n > bIters)
@@ -2152,20 +2276,17 @@ void TransceiverQMF::qmfBuildOutputLowBand(QmfBlock& b, ComplexVector& y)
 {
     y.resize(b.data.length() / 2);
     unsigned int n0 = (m_halfBandFltCoeff.length() - 1) / 2;
-    unsigned int n0_2 = n0 * 2;
     Complex* yData = y.data();
     Complex* x = b.data.data();
     Complex* w = b.halfBandFilter.data();
     // 2 * i + 2 * (i - n0) = 4 * i - 2 * n0
     // E.g. for the first n0 / 2 elements adding 0 to w is useless
     unsigned int i = 0;
-    unsigned int n = n0 / 2;
+    unsigned int n = (n0 + 1) / 2;
     if (n > y.length())
 	n = y.length();
-    for (; i < n; i++, yData++, w += 2)
-	*yData = *w;
     for (; i < y.length(); i++, yData++, w += 2) {
-	unsigned int idx = 4 * i - n0_2;
+	unsigned int idx = 2 * i + n0;
 	if (idx >= b.data.length())
 	    break;
 	Complex::sum(*yData,x[idx],*w);
@@ -2183,20 +2304,17 @@ void TransceiverQMF::qmfBuildOutputHighBand(QmfBlock& b, ComplexVector& y)
 {
     y.resize(b.data.length() / 2);
     unsigned int n0 = (m_halfBandFltCoeff.length() - 1) / 2;
-    unsigned int n0_2 = n0 * 2;
     Complex* yData = y.data();
     Complex* x = b.data.data();
     Complex* w = b.halfBandFilter.data();
     // 2 * i + 2 * (i - n0) = 4 * i - 2 * n0
     // E.g. for the first n0 / 2 elements the data is zero
     unsigned int i = 0;
-    unsigned int n = n0 / 2;
+    unsigned int n = (n0 + 1) / 2;
     if (n > y.length())
 	n = y.length();
-    for (; i < n; i++, yData++, w += 2)
-	yData->set(-w->real(),-w->imag());
     for (; i < y.length(); i++, yData++, w += 2) {
-	unsigned int idx = 4 * i - n0_2;
+	unsigned int idx = 2 * i + n0;
 	if (idx >= b.data.length())
 	    break;
 	Complex::diff(*yData,x[idx],*w);
@@ -2445,7 +2563,7 @@ void ARFCN::recvRadioData(RadioRxData* d)
     m_rxBursts++;
     if (d->m_data.length() < ARFCN_RXBURST_LEN) {
 	TelEngine::destruct(d);
-	//dropRxBurst("invalid length",d->m_time,d->m_data.length(),DebugFail,true,d);
+	dropRxBurst("invalid length",d->m_time,d->m_data.length(),DebugFail,true,d);
 	return;
     }
     if (transceiver() &&
@@ -2772,14 +2890,11 @@ unsigned int RadioIOData::copy(int16_t* buf, unsigned int samples)
 // Constructor
 RadioIface::RadioIface()
     : m_mutex(false,"RadioIface"),
-    m_samplesPerSymbol(1),
-    m_readThread(0),
-    m_txPowerScale(1.0),
-    m_rxData(true),
-    m_txData(false),
-    m_powerOn(false),
-    m_clockMutex(false,"RadioClock"),
-    m_txBufferSpace(2,0)
+    m_samplesPerSymbol(1), m_readThread(0), m_txPowerScale(1.0), m_rxData(true),
+    m_txData(false), m_powerOn(false), m_clockMutex(false,"RadioClock"),
+    m_txBufferSpace(2,0), m_testMin(0), m_testMax(0), m_testIncrease(0),
+    m_testValue(0), m_loopback(false), m_loopbackSleep(0), m_loopbackNextSend(0)
+    
 {
     m_txSynchronizer.lock();
 }
@@ -2893,7 +3008,10 @@ void RadioIface::runReadRadio()
 	RadioRxData* r = new RadioRxData(time);
 	r->m_data.assign(rd);
 	Complex::setInt16(r->m_data.data(),rd,m_rxData.data(),rd * 2);
-	transceiver()->recvRadioData(r);
+	if (!m_loopback)
+	    transceiver()->recvRadioData(r);
+	else
+	    TelEngine::destruct(r);
 	m_clockMutex.lock();
 	m_clock.incTn();
 	m_clockMutex.unlock();
@@ -2927,7 +3045,10 @@ void RadioIface::runReadRadio()
 	    RadioRxData* r = new RadioRxData(time);
 	    r->m_data.assign(n);
 	    Complex::setInt16(r->m_data.data(),n,b,bLen);
-	    transceiver()->recvRadioData(r);
+	    if (!m_loopback)
+		transceiver()->recvRadioData(r);
+	    else
+		TelEngine::destruct(r);
 	    time.incTn();
 	    b += bLen;
 	    consumed -= n;
@@ -2963,7 +3084,7 @@ uint64_t RadioIface::initialWriteTs()
 }
 
 // Energize a float value
-static inline float energize(float cv, float div)
+static inline float energize(float cv, float div = 1)
 {
     
     if (div != 1)
@@ -2982,6 +3103,51 @@ static inline float energize(float cv, float div)
 // Send data to radio
 bool RadioIface::sendData(const ComplexArray& data)
 {
+    // Special case for loopback
+    if (m_loopback) {
+	if (m_loopbackNextSend > Time::now()) {
+	    Thread::idle();
+	    return true;
+	}
+	m_loopbackNextSend = Time::now() + m_loopbackSleep;
+	
+	RadioRxData* r = new RadioRxData(m_clock);
+	r->m_data.assign(data.length());
+	for (unsigned int i = 0;i < data.length();i++) {
+	    /*r->m_data[i].set(0,0);
+	    if (i == 640) {
+		r->m_data[i++].set(2000,0);
+		r->m_data[i].set(2000,0);
+	    }
+	    if (i == 660) {
+		r->m_data[i].set(2000,0);
+	    }
+	    
+	    if (i == 681) {
+		r->m_data[i].set(2000,0);
+	    }*/
+	    /*if (i == 701)
+		r->m_data[i].set(2047,0);*/
+	    /*switch(i % 4) {
+		case 0:
+		    r->m_data[i].set(2047,0);
+		    break;
+		case 1:
+		    r->m_data[i].set(0,0);
+		    break;
+		case 2:
+		    r->m_data[i].set(-2047,0);
+		    break;
+		case 3:
+		    r->m_data[i].set(0,0);
+		    break;
+		    
+	    }*/
+	    r->m_data[i].set(energize(data[i].real()),energize(data[i].imag()));
+	}
+	transceiver()->recvRadioData(r);
+	return true;
+    }
     // NOTE: We are assuming this is done from a single thread
     // E.g. There is no send buffer protection
     unsigned int len = data.length();

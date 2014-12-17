@@ -115,7 +115,7 @@ protected:
  * Base class for objects owned by transceiver
  * @short An object owned by a transceiver
  */
-class TransceiverObj : public DebugEnabler
+class TransceiverObj : public DebugEnabler , public GenObject
 {
 public:
     /**
@@ -158,9 +158,10 @@ public:
      * @param time Burst time
      * @param c Pointer to data to dump
      * @param len The number of elements to dump
+     * @param dumpShort True to dump the short version
      */
     void dumpRecvBurst(const char* str, const GSMTime& time,
-	const Complex* c, unsigned int len);
+	const Complex* c, unsigned int len, bool dumpShort);
 
 private:
     Transceiver* m_transceiver;          // The transceiver owning this object
@@ -287,7 +288,7 @@ struct ArfcnSlot
  * This class implements the interface to a transceiver
  * @short A transceiver
  */
-class Transceiver : public GenObject, public TransceiverObj
+class Transceiver : public TransceiverObj
 {
     YCLASS(Transceiver,GenObject)
     YNOCOPY(Transceiver);
@@ -546,6 +547,13 @@ protected:
      */
     virtual void arfcnListChanged();
     
+    /**
+     * Dump the frequency shift vectors
+     * @param index The index of the vector
+     */
+    virtual void dumpFreqShift(unsigned int index) const
+	{ }
+    
     int m_state;                         // Transceiver state
     Mutex m_stateMutex;                  // Serialize state change
     Thread* m_ctrlReadThread;            // Worker (read control socket(s)) thread
@@ -700,6 +708,12 @@ protected:
      */
     virtual void arfcnListChanged();
 
+    /**
+     * Dump the frequency shift vectors
+     * @param index The index of the vector
+     */
+    virtual void dumpFreqShift(unsigned int index) const;
+
 private:
     // Run the QMF algorithm on node at given index
     void qmf(const GSMTime& time, unsigned int index = 0);
@@ -707,6 +721,7 @@ private:
 	    if (b.freqShift.length() < b.data.length())
 		SignalProcessing::setFreqShifting(&b.freqShift,b.freqShiftValue,
 		    b.data.length() + 10);
+
 	    Complex::multiply(b.data.data(),b.data.length(),
 		b.freqShift.data(),b.data.length());
 	}
@@ -729,7 +744,7 @@ private:
  * This class implements a transceiver ARFCN
  * @short An ARFCN
  */
-class ARFCN : public TransceiverObj, public GenObject
+class ARFCN : public TransceiverObj
 {
     YCLASS(ARFCN,GenObject)
     YNOCOPY(ARFCN);
@@ -1267,7 +1282,7 @@ private:
  * This class implements the transceiver interface to a radio device
  * @short A radio interface
  */
-class RadioIface : public TransceiverObj, public GenObject
+class RadioIface : public TransceiverObj
 {
     YCLASS(RadioIface,GenObject)
     YNOCOPY(RadioIface);
@@ -1427,6 +1442,20 @@ public:
 	m_testValue = min;
     }
 
+    /**
+     * Enable / disable internal loopback
+     * @param enable True to enable loopback, false to disable
+     */
+    inline void setLoopback(bool enabled = false, int sleep = 0)
+	{ m_loopback = enabled; m_loopbackSleep = sleep; }
+
+    /**
+     * Check if the radio interface is on loopback mode
+     * @return True if loopback mode is active.
+     */
+    inline bool loopback() const
+	{ return m_loopback; }
+
 protected:
     /**
      * Read data from radio
@@ -1494,6 +1523,9 @@ private:
     int m_testMax;                       // Maximum value for input data
     int m_testIncrease;                  // Increment value
     int m_testValue;                     // Current input data value
+    bool m_loopback;                     // Loopback mode flag
+    int m_loopbackSleep;                 // Time to sleep between two consecutive bursts sent in loopback mode
+    u_int64_t m_loopbackNextSend;        // Next time to send a loopback burst
 };
 
 }; // namespace TelEngine
