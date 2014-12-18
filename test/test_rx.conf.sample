@@ -1,0 +1,252 @@
+; Compile: g++ ../sigproc.cpp test_rx.cpp  -I/usr/local/include/yate -lyate -g -o test_rx.out
+; Run: ./test_rx.out
+;All the vectors have the following options:
+;file_name: String Output File
+;file_append: boolean: True to append the data to output file.
+;prefix: String: String to be added before dumped data.
+;postfix: String to be added at the end of the dumped data.
+;dump_format: String: The format to pass to ::printf.
+;output: boolean: True to dump the data to stdout.
+;print-len: Integer. Dump a limited number of values. -1 for all.
+;print_stats: boolean True to print statistics about the data.
+;compare_padding; integer; The index in data array from which the data will be compared
+;compare_file:String:The file name in which the data is placed
+;file_prefix: String: The prefix in the compare file to identify the requested data
+;is_float: boolean: True if the data is float
+;compare: String: Comma separated array of input data
+
+; Input Data: Can be loaded from a file or from the configuration.
+
+; Each section represents a test point.
+; Some Test Points can have intermediate Test Points: eg: the qmf tree
+
+
+; Test Points:
+;	- hq: Represents the convolution vector H used in qmf tree.
+;	- qmf(index) with index 0->14 Test points in intermediate QMF nodes
+;		- x :the input data
+;		- xp: the frequency shifted Data
+;		- fs: the frequency shifted array
+;		- w : the half band filter
+;	- demod-he: the output vector from channel estimator
+;	    NOTE The parameters have to be padded with "arfcn_index."
+;	- demod-u: The real part of the demodulator convolution
+;	    NOTE The parameters have to be padded with "arfcn_index."
+;	- demod-out: The output of the demodulator
+;	    NOTE The parameters have to be padded with "arfcn_index."
+;	- estimate: The estimation output
+;	    NOTE The parameters have to be padded with "arfcn_index."
+
+
+[data_in]
+compare_file=rx_in_data.txt
+file_prefix=input-data:
+
+[hq]
+compare_file=rx_in_data.txt
+file_prefix=hb:
+output=true
+prefix=x=[
+postfix=];plot(x);
+dump_format=%f 
+is_float=true
+print_stats=true
+
+[demod-he]
+0.output=true
+0.compare_file=rx_in_data.txt
+0.file_prefix=demod-he:0:
+
+[demod-u]
+0.output=true
+0.dump_format= %f 
+0.compare_file=rx_in_data.txt
+0.file_prefix=demod-u:0:
+0.is_float=true
+
+[demod-out]
+0.output=true
+0.dump_format= %f 
+0.compare_file=rx_in_data.txt
+0.file_prefix=demod-out:0:
+0.is_float=true
+
+[estimate]
+0.output=true
+0.dump_format= %.0f 
+0.is_float=true
+0.compare_file=rx_in_data.txt
+0.file_prefix=output-data:0:
+
+ 
+[qmf(0)]
+;fs.output=true
+fs.prefix=x=[
+fs.postfix=];plot(log(abs(fft(x))));
+fs.print-len=8
+fs.compare_file=rx_in_data.txt
+;fs.compare_padding=11
+fs.file_prefix=qmf0.fs:
+
+;x.output=true
+x.prefix=x=[
+x.postfix=];plot(log(abs(fft(x))));
+x.print-len=100
+x.compare_file=rx_in_data.txt
+;;x.compare_padding=11
+x.file_prefix=qmf0.x:
+x.print_stats=true
+
+;xp.output=true
+xp.prefix=x=[
+xp.postfix=];plot(log(abs(fft(x))));
+xp.print-len=23
+xp.compare_file=rx_in_data.txt
+;;xp.compare_padding=11
+xp.file_prefix=qmf0.xp:
+
+;w.output=true
+w.prefix=x=[
+w.postfix=];plot(log(abs(fft(x))));
+;w.print-len=8
+w.compare_file=rx_in_data.txt
+;;w.compare_padding=11
+w.file_prefix=qmf0.w:
+
+
+[qmf(1)]
+;fs.output=true
+fs.prefix=x=[
+fs.postfix=];plot(log(abs(fft(x))));
+fs.print-len=8
+fs.compare_file=rx_in_data.txt
+;fs.compare_padding=11
+fs.file_prefix=qmf1.fs:
+
+;x.output=true
+x.prefix=x=[
+x.postfix=];plot(log(abs(fft(x))));
+;x.print-len=8
+;x.compare_file=rx_in_data.txt
+;x.compare_padding=11
+x.file_prefix=qmf1.x:
+
+;xp.output=true
+xp.prefix=x=[
+xp.postfix=];plot(log(abs(fft(x))));
+xp.print-len=8
+xp.compare_file=rx_in_data.txt
+;xp.compare_padding=11
+xp.file_prefix=qmf1.xp:
+
+;w.output=true
+w.prefix=x=[
+w.postfix=];plot(log(abs(fft(x))));
+w.print-len=8
+w.compare_file=rx_in_data.txt
+;w.compare_padding=11
+w.file_prefix=qmf1.w:
+
+[qmf(2)]
+;fs.output=true
+fs.prefix=x=[
+fs.postfix=];plot(log(abs(fft(x))));
+fs.print-len=8
+fs.compare_file=rx_in_data.txt
+;fs.compare_padding=11
+fs.file_prefix=qmf2.fs:
+
+;x.output=true
+x.prefix=x=[
+x.postfix=];plot(log(abs(fft(x))));
+;x.print-len=8
+;x.compare_file=rx_in_data.txt
+;x.compare_padding=11
+x.file_prefix=qmf2.x:
+
+;xp.output=true
+xp.prefix=x=[
+xp.postfix=];plot(log(abs(fft(x))));
+xp.print-len=8
+xp.compare_file=rx_in_data.txt
+;xp.compare_padding=11
+xp.file_prefix=qmf2.xp:
+
+;w.output=true
+w.prefix=x=[
+w.postfix=];plot(log(abs(fft(x))));
+w.print-len=8
+w.compare_file=rx_in_data.txt
+;w.compare_padding=11
+w.file_prefix=qmf2.w:
+
+
+[qmf(3)]
+;fs.output=true
+fs.prefix=x=[
+fs.postfix=];plot(log(abs(fft(x))));
+fs.print-len=8
+fs.compare_file=rx_in_data.txt
+;fs.compare_padding=11
+fs.file_prefix=qmf3.fs:
+
+;x.output=true
+x.prefix=x=[
+x.postfix=];plot(log(abs(fft(x))));
+x.print-len=8
+;x.compare_file=rx_in_data.txt
+;x.compare_padding=11
+x.file_prefix=qmf3.x:
+
+;xp.output=true
+xp.prefix=x=[
+xp.postfix=];plot(log(abs(fft(x))));
+xp.print-len=8
+xp.compare_file=rx_in_data.txt
+;xp.compare_padding=11
+xp.file_prefix=qmf3.xp:
+
+;w.output=true
+w.prefix=x=[
+w.postfix=];plot(log(abs(fft(x))));
+w.print-len=8
+w.compare_file=rx_in_data.txt
+;w.compare_padding=11
+w.file_prefix=qmf3.w:
+
+
+[qmf(7)]
+;fs.output=true
+fs.prefix=x=[
+fs.postfix=];plot(log(abs(fft(x))));
+fs.print-len=8
+fs.compare_file=rx_in_data.txt
+;fs.compare_padding=11
+fs.file_prefix=qmf7.fs:
+
+x.output=true
+x.prefix=x=[
+x.postfix=];plot3(x);
+;x.print-len=8
+;x.compare_file=rx_in_data.txt
+;x.compare_padding=11
+x.file_prefix=qmf7.x:
+
+xp.output=true
+xp.prefix=x=[
+;xp.postfix=];plot(log(abs(fft(x))));
+xp.postfix=];plot3(x);
+;xp.print-len=8
+xp.compare_file=rx_in_data.txt
+;xp.compare_padding=11
+xp.file_prefix=qmf7.xp:
+xp.print_stats=true
+
+;w.output=true
+w.prefix=x=[
+w.postfix=];plot(log(abs(fft(x))));
+w.print-len=8
+;w.compare_file=rx_in_data.txt
+;w.compare_padding=11
+w.file_prefix=qmf7.w:
+
