@@ -27,17 +27,17 @@
 
 using namespace TelEngine;
 
-typedef SigProcVector<uint8_t,true> UInt8Vector;
-
 static const String s_arfcnIn0('0',GSM_BURST_LENGTH);
 static const String s_arfcnIn1('1',GSM_BURST_LENGTH);
 static const float s_gsmSymbolRate = (13 * 1000000) / 48;
 
 static int s_code = 0;
 static Configuration s_cfg;
-static NamedList* s_general = 0;
 static unsigned int s_arfcns = 0;
 static unsigned int s_oversampling = 0;
+static bool s_cmpFromCfg = true;
+static String s_extraInputParams;
+static String s_extraResultParams;
 // Output
 static unsigned int s_lineLen = 120;
 static unsigned int s_lineDec = 2;
@@ -46,84 +46,19 @@ static bool s_dumpHex = true;
 static bool s_confFileStyle = true;
 static String s_linePrefix;
 
-class TestTxDbg : public DebugEnabler
-{
-public:
-    inline TestTxDbg(const char* name)
-	{ debugName(name); }
-    inline bool invalidConfParam(const char* p, const char* v, const char* sect)
-	{ return invalidConfParam(p,v,sect,this); }
-    static inline bool invalidConfParam(const char* p, const char* v, const char* sect,
-	DebugEnabler* dbg) {
-	    Debug(dbg,DebugConf,"Invalid %s='%s' in '%s' section",p,v,sect);
-	    return false;
-	}
+enum CheckPoint {
+    Input = 0,
+    LaurentPA,
+    LaurentFS,
+    ARFCNv,
+    ARFCNomega,
+    ARFCNx,
+    ARFCNs,
+    FreqShift,
+    CheckPointOk
 };
 
-class TestARFCN : public String
-{
-public:
-    inline TestARFCN()
-	: m_filler(false), m_inPower(0), m_arfcn(0xffffffff)
-	{}
-    inline unsigned int arfcn() const
-	{ return m_arfcn; }
-    inline void reset(unsigned int arfcn) {
-	    assign("arfcn") += arfcn;
-	    m_arfcn = arfcn;
-	    m_inPower = 0;
-	    m_inBits.resize(GSM_BURST_LENGTH);
-	}
-    bool m_filler;
-    float m_inPower;
-    UInt8Vector m_inBits;
-    FloatVector m_v;
-    ComplexVector m_omega;
-    ComplexVector m_x;
-    ComplexVector m_s;
-private:
-    unsigned int m_arfcn;
-};
-
-class BuildTx : public TestTxDbg
-{
-public:
-    enum CheckPoint {
-	Input,
-	LaurentPA,
-	LaurentFS,
-	ARFCNv,
-	ARFCNomega,
-	ARFCNx,
-	ARFCNs,
-	FreqShift,
-	CheckPointOk
-    };
-    inline BuildTx()
-	: TestTxDbg("BUILD"),
-	m_checkPoint(0), m_failedArfcn(0xffffff),
-	m_arfcnCount(0), m_arfcns(0)
-	{ init(); }
-    inline ~BuildTx()
-	{ resetArfcns(); }
-    bool init();
-    bool test();
-    bool checkPoint(unsigned int point, TestARFCN* arfcn = 0);
-    static const TokenDict s_pointLabel[];
-protected:
-    void saveResult();
-    void resetArfcns(unsigned int n = 0);
-    unsigned int m_checkPoint;
-    unsigned int m_failedArfcn;
-    unsigned int m_arfcnCount;
-    String m_failedPoint;
-    TestARFCN* m_arfcns;
-    FloatVector m_laurentPA;
-    ComplexVector m_laurentFS;
-    ComplexVector m_y;
-};
-
-const TokenDict BuildTx::s_pointLabel[] =
+const TokenDict s_pointLabel[] =
 {
     {"Input", Input},
     {"Laurent pulse approximation", LaurentPA},
@@ -136,42 +71,30 @@ const TokenDict BuildTx::s_pointLabel[] =
     {0,0},
 };
 
-static inline void dumpParams(String& dest, const NamedList& list)
+static inline const char* pointLabel(int point)
 {
-    for (const ObjList* o = list.paramList()->skipNull(); o; o = o->skipNext()) {
-	const NamedString* ns = static_cast<const NamedString*>(o->get());
-	dest << ns->name() << "=" << *ns << "\r\n";
-    }
+    return lookup(point,s_pointLabel);
 }
 
-static String& appendUInt8(String& dest, const uint8_t& val, const char* sep)
+String& appendUInt8(String& dest, const uint8_t& val, const char* sep)
 {
     char s[80];
     sprintf(s,"%u",val);
     return dest.append(s,sep);
 }
 
-static String& appendFloat(String& dest, const float& val, const char* sep)
+String& appendFloat(String& dest, const float& val, const char* sep)
 {
     char s[80];
     sprintf(s,"%g",val);
     return dest.append(s,sep);
 }
 
-static String& appendComplex(String& dest, const Complex& val, const char* sep)
+String& appendComplex(String& dest, const Complex& val, const char* sep)
 {
     char s[170];
     sprintf(s,"%g%+gi",val.real(),val.imag());
     return dest.append(s,sep);
-}
-
-static inline bool setDump(bool*& dumpStr, bool*& dumpHex)
-{
-    if (!dumpStr)
-	dumpStr = &s_dumpStr;
-    if (!dumpHex)
-	dumpHex = &s_dumpHex;
-    return *dumpStr || *dumpHex;
 }
 
 static unsigned int addPName(String& buf, const String& pName, const char* suffix)
@@ -187,117 +110,206 @@ static unsigned int addPName(String& buf, const String& pName, const char* suffi
     return p.length();
 }
 
-static String& dumpVector(String& dest, FloatVector& v,
-    const String& pName = String::empty(),
-    bool* dumpStr = 0, bool* dumpHex = 0)
+static inline bool invalidConfParam(const char* p, const char* v, const char* sect)
 {
-    if (!setDump(dumpStr,dumpHex))
-	return dest;
-    if (pName)
-	dest << pName << "_length=" << v.length() << "\r\n";
-    unsigned int first = 0;
-    if (*dumpStr) {
-	first = addPName(dest,pName,"_str=");
-	if (!s_lineLen)
-	    v.dump(dest,appendFloat) += "\r\n";
-	else
-	    v.appendSplit(dest,s_lineLen,appendFloat,first,s_linePrefix);
-    }
-    if (!*dumpHex)
-	return dest;
-    first = addPName(dest,pName,"_hex=");
-    return v.appendSplitHex(dest,s_lineLen,first,s_linePrefix);
+    Debug(DebugConf,"Invalid %s='%s' in '%s' section",p,v,sect);
+    return false;
 }
 
-static String& dumpVector(String& dest, ComplexVector& v,
-    const String& pName = String::empty(),
-    bool* dumpStr = 0, bool* dumpHex = 0)
+class TestDataVectorIface
 {
-    if (!setDump(dumpStr,dumpHex))
-	return dest;
-    if (pName)
-	dest << pName << "_length=" << v.length() << "\r\n";
-    unsigned int first = 0;
-    if (*dumpStr) {
-	first = addPName(dest,pName,"_str=");
-	if (!s_lineLen)
-	    v.dump(dest,appendComplex) += "\r\n";
-	else
-	    v.appendSplit(dest,s_lineLen,appendComplex,first,s_linePrefix);
-    }
-    if (!*dumpHex)
-	return dest;
-    first = addPName(dest,pName,"_hex=");
-    return v.appendSplitHex(dest,s_lineLen,first,s_linePrefix);
-}
+public:
+    virtual unsigned int dataLen() const  = 0;
+    virtual String& appendFromIndex(String& dest, unsigned int index, bool data) = 0;
+    virtual String& dump(String& dest, const String& pName = String::empty(),
+	bool* dumpStr = 0, bool* dumpHex = 0, const char* sep = ",",
+	bool data = true, unsigned int n = 0) const  = 0;
+    virtual bool compare(unsigned int& result) = 0;
+};
 
-static String& dumpVector(String& dest, UInt8Vector& v,
-    const String& pName = String::empty(),
-    bool* dumpStr = 0, bool* dumpHex = 0, bool addLen = true,
-    const char* sep = ",")
+template <class Obj, bool basicType, String& (*funcAppendToStr)(String& dest, const Obj& item, const char* sep)>
+class TestDataVector : public TestDataVectorIface
 {
-    if (!setDump(dumpStr,dumpHex))
-	return dest;
-    if (addLen && pName)
-	dest << pName << "_length=" << v.length() << "\r\n";
-    unsigned int first = 0;
-    if (*dumpStr) {
-	first = addPName(dest,pName,"_str=");
-	if (!s_lineLen)
-	    v.dump(dest,appendUInt8,sep) += "\r\n";
-	else
-	    v.appendSplit(dest,s_lineLen,appendUInt8,first,s_linePrefix,"\r\n",sep);
-    }
-    if (!*dumpHex)
-	return dest;
-    first = addPName(dest,pName,"_hex=");
-    return v.appendSplitHex(dest,s_lineLen,first,s_linePrefix);
-}
+public:
+    void reset() {
+	    m_data.clear();
+	    m_compare.clear();
+	}
+    virtual unsigned int dataLen() const
+	{ return m_data.length(); }
+    virtual String& appendFromIndex(String& dest, unsigned int index, bool data) {
+	    const SigProcVector<Obj,basicType>& what = data ? m_data : m_compare;
+	    if (index < what.length())
+		return (*funcAppendToStr)(dest,what[index],0);
+	    return dest;
+	}
+    bool readBits(const String& src) {
+	    if (m_data.length() > src.length())
+		return false;
+	    for (unsigned int i = 0; i < m_data.length(); i++) {
+		char c = src[i];
+		if (c != '1' && c != '0')
+		    return false;
+		m_data[i] = (Obj)(c - '0');
+	    }
+	    return true;
+	}
+    virtual String& dump(String& dest, const String& pName = String::empty(),
+	bool* dumpStr = 0, bool* dumpHex = 0, const char* sep = ",",
+	bool data = true, unsigned int n = 0) const {
+	    if (!dumpStr)
+		dumpStr = &s_dumpStr;
+	    if (!dumpHex)
+		dumpHex = &s_dumpHex;
+	    if (!(*dumpStr || *dumpHex))
+		return dest;
+	    const SigProcVector<Obj,basicType>* what = data ? &m_data : &m_compare;
+	    SigProcVector<Obj,basicType> tmp;
+	    if (n && n < what->length()) {
+		tmp.resize(n);
+		tmp.copy(what->data(),n);
+		what = &tmp;
+	    }
+	    if (pName)
+		dest << pName << "_length=" << what->length() << "\r\n";
+	    unsigned int first = 0;
+	    if (*dumpStr) {
+		first = addPName(dest,pName,"_str=");
+		if (!s_lineLen)
+		    what->dump(dest,funcAppendToStr,sep) += "\r\n";
+		else
+		    what->appendSplit(dest,s_lineLen,funcAppendToStr,first,s_linePrefix,"\r\n",sep);
+	    }
+	    if (!*dumpHex)
+		return dest;
+	    first = addPName(dest,pName,"_hex=");
+	    return what->appendSplitHex(dest,s_lineLen,first,s_linePrefix,"\r\n");
+	}
+    // Unhexify compare from config param
+    int unHexify(const String& sect, const String& param) {
+	    NamedString* tmp = s_cfg.getKey(sect,param);
+	    int res = 0;
+	    if (!TelEngine::null(tmp))
+		res = m_compare.unHexify(tmp->c_str(),tmp->length());
+	    else
+		m_compare.clear();
+	    if (res != 0)
+		s_extraInputParams << "invalid_input_skip_compare=invalid hex data " <<
+		    (res > 0 ? "length" : "format") << " for '" << param <<
+		    "' section=[" << sect << "]\r\n";
+	    return res;
+	}
+    // Compare data if m_compare length is not 0. Result is set only if comparing
+    virtual bool compare(unsigned int& result) {
+	    if (!m_compare.length())
+		return true;
+	    result = SigProcVector<Obj,basicType>::compare(m_data,m_compare);
+	    return result == m_data.length();
+	}
+    SigProcVector<Obj,basicType> m_data;
+    SigProcVector<Obj,basicType> m_compare;
+};
 
-static inline bool readBits(UInt8Vector& dest, const String& src)
+typedef TestDataVector<uint8_t,true,appendUInt8> TestUint8Unit;
+typedef TestDataVector<float,true,appendFloat> TestFloatUnit;
+typedef TestDataVector<Complex,false,appendComplex> TestComplexUnit;
+
+class TestARFCN : public String
 {
-    unsigned int n = dest.length();
-    if (n > src.length())
-	return false;
-    const char* s = src.c_str();
-    uint8_t* d = dest.data();
-    for (; n; n--) {
-	if (*s == '1')
-	    *d++ = 1;
-	else if (*s == '0')
-	    *d++ = 0;
-	else
-	    return false;
-    }
-    return true;
-}
+public:
+    inline TestARFCN()
+	: m_filler(false), m_inPower(0), m_arfcn(0xffffffff)
+	{}
+    inline unsigned int arfcn() const
+	{ return m_arfcn; }
+    inline void setArfcn(unsigned int arfcn) {
+	    assign("arfcn") += arfcn;
+	    m_arfcn = arfcn;
+	}
+    bool m_filler;
+    float m_inPower;
+    TestUint8Unit m_inBits;
+    TestFloatUnit m_v;
+    TestComplexUnit m_omega;
+    TestComplexUnit m_x;
+    TestComplexUnit m_s;
+private:
+    unsigned int m_arfcn;
+};
+
+class BuildTx
+{
+public:
+    BuildTx();
+    inline ~BuildTx()
+	{ resetArfcns(); }
+    bool test();
+    bool checkPoint(unsigned int point, TestARFCN* arfcn = 0);
+protected:
+    void saveResult();
+    void resetArfcns(unsigned int n = 0);
+    unsigned int m_checkPoint;
+    unsigned int m_failedArfcn;
+    unsigned int m_arfcnCount;
+    String m_failedPoint;
+    TestARFCN* m_arfcns;
+    TestFloatUnit m_laurentPA;
+    TestComplexUnit m_laurentFS;
+    TestComplexUnit m_y;
+};
 
 
 //
 // BuildTx
 //
-bool BuildTx::init()
+BuildTx::BuildTx()
+    : m_checkPoint(0),
+    m_failedArfcn(0xffffff),
+    m_arfcnCount(0),
+    m_arfcns(0)
 {
-    NamedList& params = *s_general;
+    NamedList* params = s_cfg.createSection("general");
     resetArfcns(s_arfcns);
-    for (unsigned int i = 0; i < m_arfcnCount; i++) {
-	const String& name = m_arfcns[i];
-	String s = params[name];
-	if (s.isBoolean())
-	    s = s.toBoolean() ? s_arfcnIn1: s_arfcnIn0;
-	else if (!s)
-	    s = s_arfcnIn1;
-	else if (s == "filler") {
-	    m_arfcns[i].m_filler = true;
-	    continue;
+    unsigned int i = 0;
+    for (; i < m_arfcnCount; i++) {
+	TestARFCN& a = m_arfcns[i];
+	const String& name = a;
+	String s = params->getValue(a);
+	a.m_filler = (s == "filler");
+	if (!a.m_filler) {
+	    if (s.isBoolean())
+		s = s.toBoolean() ? s_arfcnIn1: s_arfcnIn0;
+	    else if (!s)
+		s = s_arfcnIn1;
+	    a.m_inBits.m_data.resize(GSM_BURST_LENGTH);
+	    if (!a.m_inBits.readBits(s)) {
+		invalidConfParam(name,s,*params);
+		break;
+	    }
+	    a.m_inPower = 0.01;
 	}
-	if (!readBits(m_arfcns[i].m_inBits,s)) {
-	    resetArfcns();
-	    return invalidConfParam(name,s,params);
+	if (s_cmpFromCfg) {
+#define ARFCN_TEST_UNHEXIFY(vect,point) a.vect.unHexify(name,name + "_" + pointLabel(point) + "_hex")
+	    if (!a.m_filler) {
+		ARFCN_TEST_UNHEXIFY(m_v,ARFCNv);
+		ARFCN_TEST_UNHEXIFY(m_omega,ARFCNomega);
+		ARFCN_TEST_UNHEXIFY(m_x,ARFCNx);
+	    }
+	    ARFCN_TEST_UNHEXIFY(m_s,ARFCNs);
+#undef ARFCN_TEST_UNHEXIFY
 	}
-	m_arfcns[i].m_inPower = 0.01;
     }
-    return true;
+    if (i < m_arfcnCount) {
+	resetArfcns();
+	return;
+    }
+#define BUILD_TEST_UNHEXIFY(vect,point) vect.unHexify(pointLabel(point),"data_hex")
+    if (s_cmpFromCfg) {
+	BUILD_TEST_UNHEXIFY(m_laurentPA,LaurentPA);
+	BUILD_TEST_UNHEXIFY(m_laurentFS,LaurentFS);
+	BUILD_TEST_UNHEXIFY(m_y,FreqShift);
+    }
+#undef BUILD_TEST_UNHEXIFY
 }
 
 // Build input data (TX)
@@ -323,9 +335,9 @@ bool BuildTx::test()
 	unsigned int Ls = 156.25 * K;
 	// Generate Laurent pulse approximation sampled at Fs, length: Lp = 4 * K
 	unsigned int Lp = 4 * (unsigned int)K;
-	m_laurentPA.resize(Lp);
-	float* hp = m_laurentPA.data();
-	for (unsigned int n = 0; n < m_laurentPA.length(); n++) {
+	m_laurentPA.m_data.resize(Lp);
+	float* hp = m_laurentPA.m_data.data();
+	for (unsigned int n = 0; n < m_laurentPA.m_data.length(); n++) {
 	    float f = ((float)n - (Lp / 2)) / K;
 	    float f2 = f * f;
 	    float g = 1.138 * f2 - 0.527 * f2 * f2;
@@ -334,9 +346,9 @@ bool BuildTx::test()
 	CHECKPOINT(LaurentPA,0);
 	// Generate Laurent frequency shift vector
 	// s[n] = e ^ ((-j * n * PI) / (2 * K))
-	m_laurentFS.resize(Ls);
-	Complex* s = m_laurentFS.data();
-	for (unsigned int n = 0; n < m_laurentFS.length(); n++) {
+	m_laurentFS.m_data.resize(Ls);
+	Complex* s = m_laurentFS.m_data.data();
+	for (unsigned int n = 0; n < m_laurentFS.m_data.length(); n++) {
 	    float real = ::expf(0);
 	    float imag = (-(n * PI) / (2 * K));
 	    s[n].real(real * ::cosf(imag));
@@ -353,49 +365,49 @@ bool BuildTx::test()
 		// x: modulated output at rate Fs
 		// hp: Laurent pulse approximation sampled at Fs, length: Lp = 4 * K
 		// s: complex-valued frequency shift sequence
-		uint8_t* b = a.m_inBits.data();
+		uint8_t* b = a.m_inBits.m_data.data();
 		// Calculate v: v[n] = 2 * b[n] * floor(n / K) - 1
-		a.m_v.assign(Ls);
-		float* v = a.m_v.data();
-		for (unsigned int n = 0; n < a.m_v.length(); n++) {
+		a.m_v.m_data.assign(Ls);
+		float* v = a.m_v.m_data.data();
+		for (unsigned int n = 0; n < a.m_v.m_data.length(); n++) {
 		    unsigned int idx = ::floor(n / K);
-		    if (idx >= a.m_inBits.length())
+		    if (idx >= a.m_inBits.m_data.length())
 			break;
 		    v[n] = 2 * b[idx] - 1;
 		}
 		CHECKPOINT(ARFCNv,&a);
 		// Calculate omega: omega[n] = v[n] * s[n]
-		a.m_omega.resize(a.m_v.length());
-		Complex* omega = a.m_omega.data();
-		for (unsigned int n = 0; n < a.m_omega.length(); n++)
+		a.m_omega.m_data.resize(a.m_v.m_data.length());
+		Complex* omega = a.m_omega.m_data.data();
+		for (unsigned int n = 0; n < a.m_omega.m_data.length(); n++)
 		    omega[n] = s[n] * v[n];
 		CHECKPOINT(ARFCNomega,&a);
 		// Modulate, build omega padded with Lp/2 elements at each end
 		// x[n] = SUM(i=0..Lp)(omega[n + i] * hp[Lp - 1 - i])
-		ComplexVector newOmega(a.m_omega.length() + Lp);
-		newOmega.copy(a.m_omega.data(),a.m_omega.length(),Lp / 2);
+		ComplexVector newOmega(a.m_omega.m_data.length() + Lp);
+		newOmega.copy(a.m_omega.m_data.data(),a.m_omega.m_data.length(),Lp / 2);
 		omega = newOmega.data();
-		a.m_x.assign(a.m_omega.length());
-		Complex* x = a.m_x.data();
-		for (unsigned int n = 0; n < a.m_x.length(); n++)
+		a.m_x.m_data.assign(a.m_omega.m_data.length());
+		Complex* x = a.m_x.m_data.data();
+		for (unsigned int n = 0; n < a.m_x.m_data.length(); n++)
 		    for (unsigned int i = 0; i < Lp; i++)
 			x[n] += omega[n + i] * hp[Lp - 1 - i];
 	    }
 	    else
-		a.m_x.assign(Fs);
+		a.m_x.m_data.assign(Fs);
 	    CHECKPOINT(ARFCNx,&a);
 	    // Frequency shifting vector
 	    // fk = (4 * k - 6)(100 * 10^3)
 	    // omegaK = (2 * PI * fk) / Fs
 	    // s[n] = e ^ (-j * n * omegaK)
-	    a.m_s.resize(a.m_x.length());
+	    a.m_s.m_data.resize(a.m_x.m_data.length());
 	    float real = ::expf(0);
-	    for (unsigned int n = 0; n < a.m_s.length(); n++) {
+	    for (unsigned int n = 0; n < a.m_s.m_data.length(); n++) {
 		float fk = (4 * a.arfcn() - 6) * (100 * 1000);
 		float omegaK = (2 * PI * fk) / Fs;
 		float imag = -n * omegaK;
-		a.m_s[n].real(real * ::cosf(imag));
-		a.m_s[n].imag(real * ::sinf(imag));
+		a.m_s.m_data[n].real(real * ::cosf(imag));
+		a.m_s.m_data[n].imag(real * ::sinf(imag));
 	    }
 	    CHECKPOINT(ARFCNs,&a);
 	}
@@ -404,12 +416,12 @@ bool BuildTx::test()
 	// Frequency shifting
 	// y[n] = SUM(i=0..k)(xi[n] * si[n])
 	unsigned int k = m_arfcnCount;
-	m_y.assign(Ls);
-	for (unsigned int n = 0; n < m_y.length(); n++) {
+	m_y.m_data.assign(Ls);
+	for (unsigned int n = 0; n < m_y.m_data.length(); n++) {
 	    for (unsigned int i = 0; i < k; i++) {
-		Complex* x = m_arfcns[i].m_x.data();
-		Complex* s = m_arfcns[i].m_s.data();
-		m_y[n] += x[n] * s[n];
+		Complex* x = m_arfcns[i].m_x.m_data.data();
+		Complex* s = m_arfcns[i].m_s.m_data.data();
+		m_y.m_data[n] += x[n] * s[n];
 	    }
 	}
 	CHECKPOINT(FreqShift,0);
@@ -422,23 +434,20 @@ bool BuildTx::test()
 
 bool BuildTx::checkPoint(unsigned int point, TestARFCN* arfcn)
 {
-    FloatVector* fVect = 0;
-    ComplexVector* cVect = 0;
-    String sectName;
-    String dataName = "data";
+    TestDataVectorIface* v = 0;
     switch (point) {
+#define SET_POINT_VECT_BREAK(cv,fv) { \
+	v = cv ? static_cast<TestDataVectorIface*>(cv) : static_cast<TestDataVectorIface*>(fv); \
+	break; \
+    }
 #define CASE_POINT_VECT(point,cv,fv) \
-    case point: sectName = lookup(point,s_pointLabel); fVect = fv; cVect = cv; break
+    case point: \
+	SET_POINT_VECT_BREAK(cv,fv);
 #define CASE_POINT_VECT_A(point,cv,fv) \
     case point: \
-	if (arfcn) { \
-	    sectName = *arfcn; \
-	    dataName = lookup(point,s_pointLabel); \
-	    cVect = cv; \
-	    fVect = fv; \
-	    break; \
-	} \
-	return false
+	if (!arfcn) \
+	    return false; \
+	SET_POINT_VECT_BREAK(cv,fv)
 	case Input:
 	    return true;
 	CASE_POINT_VECT(LaurentPA,0,&m_laurentPA);
@@ -451,32 +460,37 @@ bool BuildTx::checkPoint(unsigned int point, TestARFCN* arfcn)
 	default:
 	    return true;
     }
+    bool ok = true;
     // Compare
-    String tmp;
-    if (cVect)
-	tmp.hexify(cVect->data(),cVect->size());
-    else if (fVect)
-	tmp.hexify(fVect->data(),fVect->size());
-    if (!tmp)
-	return true;
-    NamedList* sect = s_cfg.getSection(sectName);
-    const String& str = sect ? (*sect)[dataName + "_hex"] : String::empty();
-    if (!str || tmp == str)
-	return true;
-    m_failedPoint.clear();
-    m_failedPoint << "'" << lookup(point,s_pointLabel) << "'";
-    if (arfcn) {
-	m_failedArfcn = arfcn->arfcn();
-	m_failedPoint << " ARFCN " << m_failedArfcn;
+    while (v) {
+	unsigned int result = 0;
+	if (v->compare(result))
+	    break;
+	m_failedPoint.clear();
+	m_failedPoint << "'" << pointLabel(point) << "'";
+	if (arfcn) {
+	    m_failedArfcn = arfcn->arfcn();
+	    m_failedPoint << " ARFCN " << m_failedArfcn;
+	}
+	s_extraResultParams << "compare_failed=";
+	if (result < v->dataLen()) {
+	    s_extraResultParams << "index " << result << "\r\n";
+	    s_extraResultParams << "generated_value=";
+	    v->appendFromIndex(s_extraResultParams,result,true) += "\r\n";
+	    s_extraResultParams << "compare_value=";
+	    v->appendFromIndex(s_extraResultParams,result,false) += "\r\n";
+	}
+	else
+	    s_extraResultParams << "vectors have different length\r\n";
+	ok = false;
+	break;
     }
-    printf("Failed comparison %s\r\n-----\r\ncurrent=%u %s\r\ncompare=%u %s\r\n-----\r\n",
-	m_failedPoint.safe(),tmp.length(),tmp.c_str(),str.length(),str.c_str());
-    return false;
+    return ok;
 }
 
 static inline void addSectPoint(String& dest, int point)
 {
-    dest << "\r\n[" << lookup(point,BuildTx::s_pointLabel) << "]\r\n";
+    dest << "\r\n[" << pointLabel(point) << "]\r\n";
 }
 
 static inline String* createSectPoint(int point)
@@ -504,19 +518,20 @@ void BuildTx::saveResult()
 	appendFloat(*buf,m_arfcns[i].m_inPower,0) += "\r\n";
 	bool str = true;
 	bool hex = false;
-	dumpVector(*buf,m_arfcns[i].m_inBits,name + "_bits",&str,&hex,false,0);
+	m_arfcns[i].m_inBits.dump(*buf,name + "_bits",&str,&hex,0);
     }
+    *buf << s_extraInputParams;
     o = o->append(buf);
     // Laurent approximation
     if (m_checkPoint >= LaurentPA) {
 	buf = createSectPoint(LaurentPA);
-	dumpVector(*buf,m_laurentPA,"data");
+	m_laurentPA.dump(*buf,"data");
 	o = o->append(buf);
     }
     // Laurent freq shifting
     if (m_checkPoint >= LaurentFS) {
 	buf = createSectPoint(LaurentFS);
-	dumpVector(*buf,m_laurentFS,"data");
+	m_laurentFS.dump(*buf,"data");
 	o = o->append(buf);
     }
     // ARFCNs data
@@ -527,14 +542,14 @@ void BuildTx::saveResult()
 	    *buf << "\r\n[" << a << "]\r\n";
 	    if (!a.m_filler) {
 		if (i < m_failedArfcn || m_checkPoint >= ARFCNv)
-		    dumpVector(*buf,a.m_v,lookup(ARFCNv,s_pointLabel));
+		    a.m_v.dump(*buf,pointLabel(ARFCNv));
 		if (i < m_failedArfcn || m_checkPoint >= ARFCNomega)
-		    dumpVector(*buf,a.m_omega,lookup(ARFCNomega,s_pointLabel));
+		    a.m_omega.dump(*buf,pointLabel(ARFCNomega));
 		if (i < m_failedArfcn || m_checkPoint >= ARFCNx)
-		    dumpVector(*buf,a.m_x,lookup(ARFCNx,s_pointLabel));
+		    a.m_x.dump(*buf,pointLabel(ARFCNx));
 	    }
 	    if (i < m_failedArfcn || m_checkPoint >= ARFCNs)
-		dumpVector(*buf,a.m_s,lookup(ARFCNs,s_pointLabel));
+		a.m_s.dump(*buf,pointLabel(ARFCNs));
 	    o = o->append(buf);
 	    if (i == m_failedArfcn)
 		break;
@@ -543,7 +558,7 @@ void BuildTx::saveResult()
     // Freq shifted result
     if (m_checkPoint >= FreqShift) {
 	buf = createSectPoint(FreqShift);
-	dumpVector(*buf,m_y,"data");
+	m_y.dump(*buf,"data");
 	o = o->append(buf);
     }
     buf = new String;
@@ -554,6 +569,7 @@ void BuildTx::saveResult()
 	*buf << "status=FAILED\r\n";
 	*buf << "cause=" << m_failedPoint << "\r\n";
     }
+    *buf << s_extraResultParams;
     o = o->append(buf);
     o = o->append(new String("\r\n"));
     String buffer;
@@ -571,9 +587,8 @@ void BuildTx::resetArfcns(unsigned int n)
 	return;
     m_arfcns = new TestARFCN[m_arfcnCount];
     for (unsigned int i = 0; i < m_arfcnCount; i++)
-	m_arfcns[i].reset(i);
+	m_arfcns[i].setArfcn(i);
 }
-
 
 static void sigHandler(int sig)
 {
@@ -589,13 +604,13 @@ extern "C" int main(int argc, const char** argv, const char** envp)
 {
     ::signal(SIGINT,sigHandler);
     ::signal(SIGTERM,sigHandler);
-    // Load config
+    Debugger::enableOutput(true);
     TelEngine::debugLevel(DebugAll);
     s_cfg = "./test/testtx.conf";
     s_cfg.load();
-    s_general = s_cfg.createSection("general");
-    s_arfcns = (unsigned int)s_general->getIntValue("arfcns",4,1,4);
-    s_oversampling = (unsigned int)s_general->getIntValue("oversampling",8,1,8);
+    NamedList* general = s_cfg.createSection("general");
+    s_arfcns = (unsigned int)general->getIntValue("arfcns",4,1,4);
+    s_oversampling = (unsigned int)general->getIntValue("oversampling",8,1,8);
     NamedList* out = s_cfg.createSection("output");
     s_dumpHex = out->getBoolValue("dump_hex");
     s_dumpStr = out->getBoolValue("dump_str",true);

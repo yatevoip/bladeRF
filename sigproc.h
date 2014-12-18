@@ -157,6 +157,9 @@ public:
 	    imag(i);
 	}
 
+    inline bool operator==(const Complex& c) const
+	{ return real() == c.real() && imag() == c.imag(); }
+
     inline Complex& operator=(float real) {
 	    set(real);
 	    return *this; 
@@ -196,7 +199,7 @@ public:
 	    return (tmp *= f);
 	}
 
-    inline Complex operator+(const Complex& c) const { 
+    inline Complex operator+(const Complex& c) const {
 	    Complex tmp;
 	    return sum(tmp,*this,c);
 	}
@@ -659,6 +662,53 @@ public:
 	    String hex;
 	    return SigProcUtils::appendSplit(buf,hex.hexify((void*)data(),size()),
 		lineLen,offset,linePrefix,suffix);
+	}
+	
+    /**
+     * Build this vector from a hexadecimal string representation.
+     * Clears the array at start, i.e. the array will be empty on failure.
+     * The array may be empty on success also
+     * Each octet must be represented in the input string with 2 hexadecimal characters.
+     * If a separator is specified, the octets in input string must be separated using
+     *  exactly 1 separator. Only 1 leading or 1 trailing separators are allowed.
+     * @param str Input character string
+     * @param len Length of input string
+     * @param sep Separator character used between octets.
+     *  [-128..127]: expected separator (0: no separator is expected).
+     *  Detect the separator if other value is given
+     * @return 0 on success, negative if unhexify fails,
+     *  positive if the result is not a multiple of Obj size
+     */
+    int unHexify(const char* str, unsigned int len, int sep = 255) {
+	    clear();
+	    DataBlock d;
+	    bool ok = (sep < -128 || sep > 127) ? d.unHexify(str,len) :
+		d.unHexify(str,len,(char)sep);
+	    if (!(ok && (d.length() % sizeof(Obj)) == 0))
+		return ok ? 1 : -1;
+	    m_data = (Obj*)d.data();
+	    m_length = d.length() / sizeof(Obj);
+	    d.clear(false);
+	    return 0;
+	}
+
+    /**
+     * Compare 2 vectors. The vector item must implement the '==' operator
+     * @param v1 First vector
+     * @param v2 Second vector
+     * @return v1 length on success, v1 length plus 1 if the 2 vectors don't have the same length,
+     *  the index of the first different element otherwise
+     */
+    static unsigned int compare(const SigProcVector<Obj,basicType>& v1,
+	const SigProcVector<Obj,basicType>& v2) {
+	    if (v1.length() != v2.length())
+		return v1.length() + 1;
+	    unsigned int i = 0;
+	    const Obj* data1 = v1.data();
+	    const Obj* data2 = v2.data();
+	    while (i < v1.length() && *data1++ == *data2++)
+		i++;
+	    return i;
 	}
 
 private:
