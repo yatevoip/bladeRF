@@ -98,6 +98,7 @@ protected:
 ObjList TrxWorker::s_threads;
 Mutex TrxWorker::s_mutex(false,"TrxWorkers");
 String s_dummyBurstContent = "0000000001111101101110110000010100100111000001001000100000001111100011100010111000101110001010111010010100011001100111001111010011111000100101111101010000";
+static Mutex s_dumperChange(false,"TrxDumperChange");
 
 const TokenDict TrxWorker::s_name[] = {
     {"ARFCNData",     ARFCNData},
@@ -784,7 +785,8 @@ Transceiver::Transceiver(const char* name)
     m_dumpOneTx(false),
     m_dumpOneRx(false),
     m_error(false),
-    m_exiting(false)
+    m_exiting(false),
+    m_dump(0)
 {
     setTransceiver(*this,name);
     DDebug(this,DebugAll,"Transceiver() [%p]",this);
@@ -796,7 +798,6 @@ Transceiver::Transceiver(const char* name)
 Transceiver::~Transceiver()
 {
     DDebug(this,DebugAll,"~Transceiver() [%p]",this);
-
     stop();
     clearFillers();
     // NOTE: If you need to use m_arfcnCount use it before this line!
@@ -804,6 +805,7 @@ Transceiver::~Transceiver()
     resetARFCNs();
     TelEngine::destruct(m_radio);
     TelEngine::destruct(m_dummyTxBurst);
+    TelEngine::destruct(m_dump);
 }
 
 // Initialize the transceiver. This method should be called after construction
@@ -1123,6 +1125,8 @@ bool Transceiver::sendBurst(GSMTime& time)
     toSend.dump(dump);
     Debug(this,DebugAll,"Send tx data : %s",dump.c_str());
 #endif
+    if (dumper())
+	dumper()->dumpTx(TrxDump::ArfcnTxFreqShifted,&toSend);
     // Start TEST
     if (m_alterSend) {
 	// Send only the complex sinusoids.
@@ -1345,6 +1349,16 @@ void Transceiver::destruct()
 {
     stop();
     GenObject::destruct();
+}
+
+// Set the data dumper of this transceiver if not already set
+void Transceiver::dumper(TrxDump* dump)
+{
+    Lock lck(s_dumperChange);
+    if (!m_dump)
+	m_dump = dump;
+    else
+	TelEngine::destruct(dump);
 }
 
 // Starting radio power on notification
@@ -3086,7 +3100,6 @@ uint64_t RadioIface::initialWriteTs()
 // Energize a float value
 static inline float energize(float cv, float div = 1)
 {
-    
     if (div != 1)
 	cv *= div;
     static unsigned int s_energizer = 2047; // 2^11 - 1
@@ -3220,6 +3233,69 @@ int RadioIface::command(const String& cmd, String* rspParam, String* reason)
     if (!cmd)
 	return Transceiver::CmdEOk;
     return Transceiver::CmdEUnkCmd;
+}
+
+
+//
+// TrxDump
+//
+static const TokenDict s_dumpLocLabel[] = {
+    {"trx_config", TrxDump::TrxConfig},
+    {"tx_burst", TrxDump::ArfcnTxBurst},
+    {"frequency_shifting", TrxDump::ArfcnTxFreqShifted},
+    {0,0},
+};
+
+static String& dumpAppendFloat(String& dest, const float& val, const char* sep)
+{
+    char s[80];
+    sprintf(s,"%g",val);
+    return dest.append(s,sep);
+}
+
+static String& dumpAppendComplex(String& dest, const Complex& val, const char* sep)
+{
+    char s[170];
+    sprintf(s,"%g%+gi",val.real(),val.imag());
+    return dest.append(s,sep);
+}
+
+TrxDump::TrxDump(uint32_t loc,
+    String& (*funcDumpFloat)(String& dest, const float& item, const char* sep),
+    String& (*funcDumpComplex)(String& dest, const Complex& item, const char* sep))
+    : m_location(loc ? loc : 0xffffffff),
+    m_mutex(true,"TrxDump"),
+    m_locLabel(s_dumpLocLabel),
+    m_funcDumpFloat(funcDumpFloat ? funcDumpFloat : dumpAppendFloat),
+    m_funcDumpComplex(funcDumpComplex ? funcDumpComplex : dumpAppendComplex)
+{
+}
+
+// Dump TX data
+void TrxDump::dumpTx(uint32_t loc, const void* data, ARFCN* arfcn)
+{
+    String prefix = locLabel(loc);
+    const ComplexVector* cVect = 0;
+    switch (loc) {
+	case ArfcnTxFreqShifted:
+	    if (!data)
+		return;
+	    cVect = (const ComplexVector*)data;
+	    break;
+	default:
+	    Debug(DebugStub,"TrxDump::dump() not implemented for %u (%s)",
+		loc,prefix.c_str());
+	    return;
+    }
+    String tmp;
+    if (cVect)
+	cVect->dump(tmp,m_funcDumpComplex);
+    if (arfcn)
+	prefix << " arfcn=" << arfcn->arfcn();
+    String data;
+    if (tmp)
+	data << ": " << tmp;
+    ::printf("%s%s",prefix.c_str(),data.safe());
 }
 
 /* vi: set ts=8 sw=4 sts=4 noet: */

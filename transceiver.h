@@ -40,7 +40,7 @@ class RadioErrors;                       // A radio interface error counter
 class RadioIOData;                       // Radio Rx/Tx buffer and related data
 class RadioIface;                        // Transceiver radio interface
 class TransceiverWorker;                 // Private worker thread
-
+class TrxDump;                           // Tranceiver data dumper
 
 /**
  * This class implements a generic queue
@@ -517,6 +517,19 @@ public:
     virtual void destruct();
 
     /**
+     * Retrieve the data dumper of this transceiver
+     * @return TrxDump pointer, 0 if not set
+     */
+    inline TrxDump* dumper() const
+	{ return m_dump; }
+
+    /**
+     * Set the data dumper of this transceiver if not already set
+     * @param dump Data dumper to set (it will be consumed)
+     */
+    void dumper(TrxDump* dump);
+
+    /**
      * Retrieve the state name dictionary
      * @return State name dictionary
      */
@@ -546,14 +559,14 @@ protected:
      * ARFCN list changed notification
      */
     virtual void arfcnListChanged();
-    
+
     /**
      * Dump the frequency shift vectors
      * @param index The index of the vector
      */
     virtual void dumpFreqShift(unsigned int index) const
 	{ }
-    
+
     int m_state;                         // Transceiver state
     Mutex m_stateMutex;                  // Serialize state change
     Thread* m_ctrlReadThread;            // Worker (read control socket(s)) thread
@@ -624,6 +637,7 @@ private:
 
     bool m_error;                        // Fatal error occured
     bool m_exiting;                      // Stopping flag
+    TrxDump* m_dump;                     // Data dumper
 };
 
 
@@ -1526,6 +1540,63 @@ private:
     bool m_loopback;                     // Loopback mode flag
     int m_loopbackSleep;                 // Time to sleep between two consecutive bursts sent in loopback mode
     u_int64_t m_loopbackNextSend;        // Next time to send a loopback burst
+};
+
+
+/**
+ * This class implements transceiver data dump
+ * @short Tranceiver data dumper
+ */
+class TrxDump : public GenObject
+{
+public:
+    /**
+     * Dump location enumeration
+     */
+    enum Location {
+	TrxConfig = 0x00000001,          // Dump transceiver config
+	ArfcnTxBurst = 0x00010000,       // Dump TX burst as received by an ARFCN
+	                                 //  data: ????
+	ArfcnTxFreqShifted = 0x00020000, // Dump TX bursts after frequency shifted
+	                                 //  data: ComplexVector
+	// Masks
+	AllTx = ArfcnTxBurst | ArfcnTxFreqShifted,
+    };
+
+    /**
+     * Constructor
+     * @param loc Locations to dump (default to all)
+     * @param funcDumpFloat Optional pointer to function used to dump float numbers
+     * @param funcDumpComplex Optional pointer to function used to dump Complex numbers
+     */
+    TrxDump(uint32_t loc = 0xffffffff,
+	String& (*funcDumpFloat)(String& dest, const float& item, const char* sep) = 0,
+	String& (*funcDumpComplex)(String& dest, const Complex& item, const char* sep) = 0);
+
+    /**
+     * Retrieve location label
+     * @return Location label
+     */
+    inline const char* locLabel(int loc) const
+	{ return lookup(loc,m_locLabel); }
+
+    /**
+     * Dump TX data.
+     * The default implementation dumps it to output
+     * @param loc Location to dump
+     * @param data Data to dump
+     * @param arfcn Optional ARFCN (required for ARFCN related locations)
+     */
+    virtual void dumpTx(uint32_t loc, const void* data, ARFCN* arfcn = 0);
+
+protected:
+    uint32_t m_location;                 // Locations to dump (defaults to all)
+    Mutex m_mutex;                       // Protect changes
+    const TokenDict* m_locLabel;         // Location labels
+
+private:
+    String& (*m_funcDumpFloat)(String&,const float&,const char*);
+    String& (*m_funcDumpComplex)(String&,const Complex&,const char*);
 };
 
 }; // namespace TelEngine
