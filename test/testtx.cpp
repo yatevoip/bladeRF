@@ -29,7 +29,7 @@ using namespace TelEngine;
 
 static const String s_arfcnIn0('0',GSM_BURST_LENGTH);
 static const String s_arfcnIn1('1',GSM_BURST_LENGTH);
-static const float s_gsmSymbolRate = (13 * 1000000) / 48;
+static const float s_gsmSymbolRate = (13.0 * 1000000.0) / 48.0;
 
 static int s_code = 0;
 static Configuration s_cfg;
@@ -51,7 +51,7 @@ enum CheckPoint {
     LaurentPA,
     LaurentFS,
     ARFCNv,
-    ARFCNomega,
+    ARFCNw,
     ARFCNx,
     ARFCNs,
     FreqShift,
@@ -64,7 +64,7 @@ const TokenDict s_pointLabel[] =
     {"Laurent pulse approximation", LaurentPA},
     {"Laurent frequency shifting", LaurentFS},
     {"v", ARFCNv},
-    {"omega", ARFCNomega},
+    {"w", ARFCNw},
     {"modulated", ARFCNx},
     {"frequency_shifting", ARFCNs},
     {"Frequency shifted", FreqShift},
@@ -230,7 +230,7 @@ public:
     float m_inPower;
     TestUint8Unit m_inBits;
     TestFloatUnit m_v;
-    TestComplexUnit m_omega;
+    TestComplexUnit m_w;
     TestComplexUnit m_x;
     TestComplexUnit m_s;
 private:
@@ -292,7 +292,7 @@ BuildTx::BuildTx()
 #define ARFCN_TEST_UNHEXIFY(vect,point) a.vect.unHexify(name,name + "_" + pointLabel(point) + "_hex")
 	    if (!a.m_filler) {
 		ARFCN_TEST_UNHEXIFY(m_v,ARFCNv);
-		ARFCN_TEST_UNHEXIFY(m_omega,ARFCNomega);
+		ARFCN_TEST_UNHEXIFY(m_w,ARFCNw);
 		ARFCN_TEST_UNHEXIFY(m_x,ARFCNx);
 	    }
 	    ARFCN_TEST_UNHEXIFY(m_s,ARFCNs);
@@ -345,14 +345,14 @@ bool BuildTx::test()
 	}
 	CHECKPOINT(LaurentPA,0);
 	// Generate Laurent frequency shift vector
-	// s[n] = e ^ ((-j * n * PI) / (2 * K))
+	// s[n] = e ^ ((j * n * PI) / (2 * K))
 	m_laurentFS.m_data.resize(Ls);
 	Complex* s = m_laurentFS.m_data.data();
 	for (unsigned int n = 0; n < m_laurentFS.m_data.length(); n++) {
-	    float real = ::expf(0);
-	    float imag = (-(n * PI) / (2 * K));
-	    s[n].real(real * ::cosf(imag));
-	    s[n].imag(real * ::sinf(imag));
+	    //float real = ::expf(0);
+	    float imag = ((n * PI) / (2 * K));
+	    s[n].real(::cosf(imag));
+	    s[n].imag(::sinf(imag));
 	}
 	CHECKPOINT(LaurentFS,0);
 	// Modulate each ARFCN
@@ -376,22 +376,22 @@ bool BuildTx::test()
 		    v[n] = 2 * b[idx] - 1;
 		}
 		CHECKPOINT(ARFCNv,&a);
-		// Calculate omega: omega[n] = v[n] * s[n]
-		a.m_omega.m_data.resize(a.m_v.m_data.length());
-		Complex* omega = a.m_omega.m_data.data();
-		for (unsigned int n = 0; n < a.m_omega.m_data.length(); n++)
-		    omega[n] = s[n] * v[n];
-		CHECKPOINT(ARFCNomega,&a);
-		// Modulate, build omega padded with Lp/2 elements at each end
-		// x[n] = SUM(i=0..Lp)(omega[n + i] * hp[Lp - 1 - i])
-		ComplexVector newOmega(a.m_omega.m_data.length() + Lp);
-		newOmega.copy(a.m_omega.m_data.data(),a.m_omega.m_data.length(),Lp / 2);
-		omega = newOmega.data();
-		a.m_x.m_data.assign(a.m_omega.m_data.length());
+		// Calculate w: w[n] = v[n] * s[n]
+		a.m_w.m_data.resize(a.m_v.m_data.length());
+		Complex* w = a.m_w.m_data.data();
+		for (unsigned int n = 0; n < a.m_w.m_data.length(); n++)
+		    w[n] = s[n] * v[n];
+		CHECKPOINT(ARFCNw,&a);
+		// Modulate, build w padded with Lp/2 elements at each end
+		// x[n] = SUM(i=0..Lp)(w[n + i] * hp[Lp - 1 - i])
+		ComplexVector neww(a.m_w.m_data.length() + Lp);
+		neww.copy(a.m_w.m_data.data(),a.m_w.m_data.length(),Lp / 2);
+		w = neww.data();
+		a.m_x.m_data.assign(a.m_w.m_data.length());
 		Complex* x = a.m_x.m_data.data();
 		for (unsigned int n = 0; n < a.m_x.m_data.length(); n++)
 		    for (unsigned int i = 0; i < Lp; i++)
-			x[n] += omega[n + i] * hp[Lp - 1 - i];
+			x[n] += w[n + i] * hp[Lp - 1 - i];
 	    }
 	    else
 		a.m_x.m_data.assign(Fs);
@@ -401,13 +401,13 @@ bool BuildTx::test()
 	    // omegaK = (2 * PI * fk) / Fs
 	    // s[n] = e ^ (-j * n * omegaK)
 	    a.m_s.m_data.resize(a.m_x.m_data.length());
-	    float real = ::expf(0);
+	    //float real = ::expf(0);
 	    for (unsigned int n = 0; n < a.m_s.m_data.length(); n++) {
-		float fk = (4 * a.arfcn() - 6) * (100 * 1000);
+		float fk = (4 * a.arfcn() - 6) * 1e5;
 		float omegaK = (2 * PI * fk) / Fs;
-		float imag = -n * omegaK;
-		a.m_s.m_data[n].real(real * ::cosf(imag));
-		a.m_s.m_data[n].imag(real * ::sinf(imag));
+		float imag = n * omegaK;
+		a.m_s.m_data[n].real(::cosf(imag));
+		a.m_s.m_data[n].imag(::sinf(imag));
 	    }
 	    CHECKPOINT(ARFCNs,&a);
 	}
@@ -453,7 +453,7 @@ bool BuildTx::checkPoint(unsigned int point, TestARFCN* arfcn)
 	CASE_POINT_VECT(LaurentPA,0,&m_laurentPA);
 	CASE_POINT_VECT(LaurentFS,&m_laurentFS,0);
 	CASE_POINT_VECT_A(ARFCNv,0,&arfcn->m_v);
-	CASE_POINT_VECT_A(ARFCNomega,&arfcn->m_omega,0);
+	CASE_POINT_VECT_A(ARFCNw,&arfcn->m_w,0);
 	CASE_POINT_VECT_A(ARFCNx,&arfcn->m_x,0);
 	CASE_POINT_VECT_A(ARFCNs,&arfcn->m_s,0);
 	CASE_POINT_VECT(FreqShift,&m_y,0);
@@ -543,8 +543,8 @@ void BuildTx::saveResult()
 	    if (!a.m_filler) {
 		if (i < m_failedArfcn || m_checkPoint >= ARFCNv)
 		    a.m_v.dump(*buf,pointLabel(ARFCNv));
-		if (i < m_failedArfcn || m_checkPoint >= ARFCNomega)
-		    a.m_omega.dump(*buf,pointLabel(ARFCNomega));
+		if (i < m_failedArfcn || m_checkPoint >= ARFCNw)
+		    a.m_w.dump(*buf,pointLabel(ARFCNw));
 		if (i < m_failedArfcn || m_checkPoint >= ARFCNx)
 		    a.m_x.dump(*buf,pointLabel(ARFCNx));
 	    }
@@ -606,7 +606,7 @@ extern "C" int main(int argc, const char** argv, const char** envp)
     ::signal(SIGTERM,sigHandler);
     Debugger::enableOutput(true);
     TelEngine::debugLevel(DebugAll);
-    s_cfg = "./test/testtx.conf";
+    s_cfg = "testtx.conf";
     s_cfg.load();
     NamedList* general = s_cfg.createSection("general");
     s_arfcns = (unsigned int)general->getIntValue("arfcns",4,1,4);
