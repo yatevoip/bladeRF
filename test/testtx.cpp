@@ -302,14 +302,14 @@ BuildTx::BuildTx()
 			a.m_inPower = 0.01;
 		}
 		if (s_cmpFromCfg) {
-	#define ARFCN_TEST_UNHEXIFY(vect,point) a.vect.unHexify(name,name + "_" + pointLabel(point) + "_hex")
+#define ARFCN_TEST_UNHEXIFY(vect,point) a.vect.unHexify(name,name + "_" + pointLabel(point) + "_hex")
 			if (!a.m_filler) {
-			ARFCN_TEST_UNHEXIFY(m_v,ARFCNv);
-			ARFCN_TEST_UNHEXIFY(m_w,ARFCNw);
-			ARFCN_TEST_UNHEXIFY(m_x,ARFCNx);
+				ARFCN_TEST_UNHEXIFY(m_v,ARFCNv);
+				ARFCN_TEST_UNHEXIFY(m_w,ARFCNw);
+				ARFCN_TEST_UNHEXIFY(m_x,ARFCNx);
 			}
 			ARFCN_TEST_UNHEXIFY(m_s,ARFCNs);
-	#undef ARFCN_TEST_UNHEXIFY
+#undef ARFCN_TEST_UNHEXIFY
 		}
 	}
 	if (i < m_arfcnCount) {
@@ -330,10 +330,12 @@ bool BuildTx::test()
 {
 	if (!m_arfcns)
 	return false;
+
 #define CHECKPOINT(point,arfcn) \
 	m_checkPoint = point; \
 	if (!checkPoint(point,arfcn)) \
 	break
+
 	while (true) {
 		m_failedArfcn = 0xffffff;
 		CHECKPOINT(Input,0);
@@ -452,30 +454,35 @@ bool BuildTx::checkPoint(unsigned int point, TestARFCN* arfcn)
 {
 	TestDataVectorIface* v = 0;
 	switch (point) {
+
 #define SET_POINT_VECT_BREAK(cv,fv) { \
 	v = cv ? static_cast<TestDataVectorIface*>(cv) : static_cast<TestDataVectorIface*>(fv); \
 	break; \
 	}
+
 #define CASE_POINT_VECT(point,cv,fv) \
 	case point: \
 	SET_POINT_VECT_BREAK(cv,fv);
+
 #define CASE_POINT_VECT_A(point,cv,fv) \
 	case point: \
 	if (!arfcn) \
 		return false; \
 	SET_POINT_VECT_BREAK(cv,fv)
+
 	case Input:
 		return true;
-		CASE_POINT_VECT(LaurentPA,0,&m_laurentPA);
-		CASE_POINT_VECT(LaurentFS,&m_laurentFS,0);
-		CASE_POINT_VECT_A(ARFCNv,0,&arfcn->m_v);
-		CASE_POINT_VECT_A(ARFCNw,&arfcn->m_w,0);
-		CASE_POINT_VECT_A(ARFCNx,&arfcn->m_x,0);
-		CASE_POINT_VECT_A(ARFCNs,&arfcn->m_s,0);
-		CASE_POINT_VECT(FreqShift,&m_y,0);
+	CASE_POINT_VECT(LaurentPA,0,&m_laurentPA);
+	CASE_POINT_VECT(LaurentFS,&m_laurentFS,0);
+	CASE_POINT_VECT_A(ARFCNv,0,&arfcn->m_v);
+	CASE_POINT_VECT_A(ARFCNw,&arfcn->m_w,0);
+	CASE_POINT_VECT_A(ARFCNx,&arfcn->m_x,0);
+	CASE_POINT_VECT_A(ARFCNs,&arfcn->m_s,0);
+	CASE_POINT_VECT(FreqShift,&m_y,0);
 	default:
 		return true;
 	}
+
 	bool ok = true;
 	// Compare
 	while (v) {
