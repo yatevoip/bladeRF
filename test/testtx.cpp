@@ -29,7 +29,7 @@ using namespace TelEngine;
 
 static const String s_arfcnIn0('0',GSM_BURST_LENGTH);
 static const String s_arfcnIn1('1',GSM_BURST_LENGTH);
-static const float s_gsmSymbolRate = (13.0 * 1000000.0) / 48.0;
+static const float s_gsmSymbolRate = 13e6 / 48.0;
 
 static int s_code = 0;
 static Configuration s_cfg;
@@ -143,6 +143,7 @@ public:
 			return (*funcAppendToStr)(dest,what[index],0);
 		return dest;
 	}
+
 	bool readBits(const String& src) {
 		if (m_data.length() > src.length())
 			return false;
@@ -154,9 +155,10 @@ public:
 		}
 		return true;
 	}
+
 	virtual String& dump(String& dest, const String& pName = String::empty(),
-	bool* dumpStr = 0, bool* dumpHex = 0, const char* sep = ",",
-	bool data = true, unsigned int n = 0) const {
+		bool* dumpStr = 0, bool* dumpHex = 0, const char* sep = ",",
+		bool data = true, unsigned int n = 0) const {
 		if (!dumpStr)
 			dumpStr = &s_dumpStr;
 		if (!dumpHex)
@@ -299,7 +301,7 @@ BuildTx::BuildTx()
 				invalidConfParam(name,s,*params);
 				break;
 			}
-			a.m_inPower = 0.01;
+			a.m_inPower = 1.0;
 		}
 		if (s_cmpFromCfg) {
 #define ARFCN_TEST_UNHEXIFY(vect,point) a.vect.unHexify(name,name + "_" + pointLabel(point) + "_hex")
@@ -336,6 +338,8 @@ bool BuildTx::test()
 	if (!checkPoint(point,arfcn)) \
 	break
 
+	const float PI2 = 2.0F*PI;
+
 	while (true) {
 		m_failedArfcn = 0xffffff;
 		CHECKPOINT(Input,0);
@@ -355,19 +359,24 @@ bool BuildTx::test()
 		for (unsigned int n = 0; n < m_laurentPA.m_data.length(); n++) {
 			float f = ((float)n - (Lp / 2)) / K;
 			float f2 = f * f;
-			float g = 1.138 * f2 - 0.527 * f2 * f2;
-			hp[n] = (1 / K) * 0.96 * ::expf(g);
+			// DAB - Note sign error in the first term in the line below.
+			float g = -1.138 * f2 - 0.527 * f2 * f2;
+			hp[n] = (1.0F / K) * 0.96 * ::expf(g);
 		}
 		CHECKPOINT(LaurentPA,0);
 		// Generate Laurent frequency shift vector
 		// s[n] = e ^ ((j * n * PI) / (2 * K))
 		m_laurentFS.m_data.resize(Ls);
 		Complex* s = m_laurentFS.m_data.data();
+		float omega = PI / (2.0F*K);
+		float phi = 0;
 		for (unsigned int n = 0; n < m_laurentFS.m_data.length(); n++) {
 			//float real = ::expf(0);
-			float imag = ((n * PI) / (2 * K));
-			s[n].real(::cosf(imag));
-			s[n].imag(::sinf(imag));
+			//float imag = ((n * PI) / (2 * K));
+			s[n].real(::cosf(phi));
+			s[n].imag(::sinf(phi));
+			phi += omega;
+			if (phi>PI2) phi -= PI2;
 		}
 		CHECKPOINT(LaurentFS,0);
 		// Modulate each ARFCN
@@ -384,12 +393,42 @@ bool BuildTx::test()
 				// Calculate v: v[n] = 2 * b[n] * floor(n / K) - 1
 				a.m_v.m_data.assign(Ls);
 				float* v = a.m_v.m_data.data();
+				static const int rampOffset = 4 * s_oversampling;
 				for (unsigned int n = 0; n < a.m_v.m_data.length(); n++) {
 					unsigned int idx = ::floor(n / K);
 					if (idx >= a.m_inBits.m_data.length())
 						break;
-					v[n] = 2 * b[idx] - 1;
+					// DAB - Note the 4-symbol shift to allow for power ramp shaping.
+					v[n+rampOffset] = 2 * b[idx] - 1;
 				}
+
+				// TODO - These power ramp profiles need to be verified on the CMD57.
+				// The spec for power ramping is GSM 05.05 Annex B.
+				// The signal must start down-ramp within 10 us (2.7 symbols).
+				// The signal falls at least 30 dB within 18 us (4.9 symbols).
+				// 4.9 symbols is 39.2 samples at 8x, so -1 dB per sample will meet the mask spec.
+				// -1 dB is 0.89. -1.5 dB is 0.707.
+
+				// DAB - Power ramping - leading edge.
+				float g = 1.0F;
+				float vLead = v[rampOffset+1];
+				for (int i=0; i<2*s_oversampling; i++) {
+					float val = vLead*g;
+					g *= 0.7071F;
+					//float val = (vLead * i) / s_oversampling;
+					v[rampOffset-i-1] = val;
+				}
+
+				// DAB - Power ramping - trailing edge.
+				g = 1.0F;
+				float vTrail = v[148*s_oversampling+rampOffset-1];
+				for (int i=0; i<2*s_oversampling; i++) {
+					//float val = (vLead * (s_oversampling-i-1)) / s_oversampling;
+					float val = vTrail*g;
+					g *= 0.7071F;
+					v[148*s_oversampling+rampOffset+i] = val;
+				}
+
 				CHECKPOINT(ARFCNv,&a);
 				// Calculate w: w[n] = v[n] * s[n]
 				a.m_w.m_data.resize(a.m_v.m_data.length());
@@ -409,7 +448,8 @@ bool BuildTx::test()
 						x[n] += w[n + i] * hp[Lp - 1 - i];
 			}
 			else
-				a.m_x.m_data.assign(Fs);
+				// DAB - Note typo in line below: Ls not Fs.
+				a.m_x.m_data.assign(Ls);
 
 			CHECKPOINT(ARFCNx,&a);
 			// Frequency shifting vector
@@ -417,13 +457,16 @@ bool BuildTx::test()
 			// omegaK = (2 * PI * fk) / Fs
 			// s[n] = e ^ (-j * n * omegaK)
 			a.m_s.m_data.resize(a.m_x.m_data.length());
-			//float real = ::expf(0);
+			// DAB - Note the critical cast to a signed type in the line below.
+			const float fk = (4 * (int)a.arfcn() - 6) * 1e5;
+			const float omegaK = (PI2 * fk) / Fs;
+			float phi = 0.0F;
 			for (unsigned int n = 0; n < a.m_s.m_data.length(); n++) {
-				float fk = (4 * a.arfcn() - 6) * 1e5;
-				float omegaK = (2 * PI * fk) / Fs;
-				float imag = n * omegaK;
-				a.m_s.m_data[n].real(::cosf(imag));
-				a.m_s.m_data[n].imag(::sinf(imag));
+				a.m_s.m_data[n].real(::cosf(phi));
+				a.m_s.m_data[n].imag(::sinf(phi));
+				// DAB - This incrementing approach gives a smaller cumulative error.
+				phi += omegaK;
+				if (phi>PI2) phi -= PI2;
 			}
 			CHECKPOINT(ARFCNs,&a);
 		}
