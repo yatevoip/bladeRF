@@ -387,7 +387,7 @@ bool BuildTx::test()
 		// Ls: the length of a GSM slot sampled at K
 		unsigned int Ls = 156.25 * K;
 		// Generate Laurent pulse approximation sampled at Fs
-		unsigned int Lp = 3 * s_oversampling + 1;
+		unsigned int Lp = 3 * s_oversampling - 1;
 		m_laurentPA.m_data.resize(Lp);
 		float* hp = m_laurentPA.m_data.data();
 		for (unsigned int n = 0; n < m_laurentPA.m_data.length(); n++) {
@@ -453,10 +453,19 @@ bool BuildTx::test()
 
 				CHECKPOINT(ARFCNv,&a);
 				// Calculate w: w[n] = v[n] * s[n]
+				// DAB - Note the we are no longer using the Laurent shift vector caclulcated earlier.
+				// This is faster and more accurate.
+				// We exploit the fact that most of the values in v[] and w[] are zero.
 				a.m_w.m_data.resize(a.m_v.m_data.length());
 				Complex* w = a.m_w.m_data.data();
-				for (unsigned int n = 0; n < a.m_w.m_data.length(); n++)
-					w[n] = s[n] * v[n];
+				static const float s1[] = {1.0F, 0.0F, -1.0F, 0.0F};
+				static const float s2[] = {0.0F, 1.0F, 0.0F, -1.0F};
+				int n2=0;
+				for (unsigned int n = 0; n < a.m_w.m_data.length(); n += s_oversampling) {
+					w[n].real(s1[n2%4] * v[n]);
+					w[n].imag(s2[n2%4] * v[n]);
+					n2++;
+				}
 				CHECKPOINT(ARFCNw,&a);
 				// Modulate, build w padded with Lp/2 elements at each end
 				// x[n] = SUM(i=0..Lp)(w[n + i] * hp[Lp - 1 - i])
