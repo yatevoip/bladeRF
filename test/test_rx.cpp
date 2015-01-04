@@ -205,20 +205,20 @@ void DataComparator::initialize(const NamedList& params)
 		for (ObjList* o = lines->skipNull();o;) {
 			String* l = static_cast<String*>(o->get());
 			if (l->endsWith(" \\")) {
-			l->assign(l->substr(0,l->length() - 2));
-			if (line) {
-				line->append(*l);
-				o->remove();
-				o = o->skipNull();
-			} else {
-				line = l;
-				o = o->skipNext();
-			}
-			continue;
+				l->assign(l->substr(0,l->length() - 2));
+				if (line) {
+					line->append(*l);
+					o->remove();
+					o = o->skipNull();
+				} else {
+					line = l;
+					o = o->skipNext();
+				}
+				continue;
 			}
 			if (!line) {
-			o = o->skipNext();
-			continue;
+				o = o->skipNext();
+				continue;
 			}
 			line->append(*l);
 			o->remove();
@@ -230,8 +230,8 @@ void DataComparator::initialize(const NamedList& params)
 		for (ObjList* o = lines->skipNull();o;o = o->skipNext()) {
 			String* l = static_cast<String*>(o->get());
 			if (TelEngine::null(fprefix) || l->startsWith(fprefix)) {
-			comp = l;
-			break;
+				comp = l;
+				break;
 			}
 		}
 		if (!comp) {
@@ -247,7 +247,7 @@ void DataComparator::initialize(const NamedList& params)
 	}
 	compare = params.getValue(YSTRING("compare"));
 	if (!TelEngine::null(compare))
-	loadCompare(compare);
+		loadCompare(compare);
 }
 
 void DataComparator::dump(const ComplexArray& array)
@@ -257,12 +257,12 @@ void DataComparator::dump(const ComplexArray& array)
 	char tmpd[50];
 	int len = m_printLen;
 	if (len < 0 || len > (int)array.length())
-	len = array.length();
+		len = array.length();
 	for (unsigned int i = 0;i < len;i++) {
-	int outl = ::sprintf(tmpd,m_format,array[i].real(),array[i].imag());
-	dump.append(tmpd,outl);
-	if (i != len - 1)
-		dump << ",";
+		int outl = ::sprintf(tmpd,m_format,array[i].real(),array[i].imag());
+		dump.append(tmpd,outl);
+		if (i != len - 1)
+			dump << ",";
 	}
 	dump << m_postfix;
 	if (!TelEngine::null(m_fileName)) {
@@ -275,43 +275,40 @@ void DataComparator::dump(const ComplexArray& array)
 		::printf("\n%s: len %d\n%s\n",c_str(),array.length(),dump.c_str());
 	}
 	if (m_compare.length() > 0) {
-	unsigned int end = m_compare.length();
-	if (end > array.length())
-		end = array.length();
-	if (m_compare.length() != array.length())
-		Debug(c_str(),DebugNote,"Different lengths! Compare %d data %d",m_compare.length(), array.length());
-	unsigned int i = 0;
-	for (;i < end;i ++) {
-		if (floatEqual(m_compare[i].real() ,array[i + m_comparePadding].real()) && 
-			floatEqual(m_compare[i].imag(), array[i + m_comparePadding].imag()))
-			continue;
-		Debug(c_str(),DebugWarn,"Values differ expected index %d (%g, %g)  data (%g,%g) at index %d real diff %f imag diff %f",
-		  i + m_comparePadding ,array[i + m_comparePadding].real(),array[i + m_comparePadding].imag(),
-		  m_compare[i].real(),m_compare[i].imag(),i,m_compare[i].real() - array[i + m_comparePadding].real(),
-		  m_compare[i].imag()- array[i + m_comparePadding].imag());
-		break;
-	}
-	if (i == end)
-		Debug(c_str(),DebugNote,"Data Mached!");
+		unsigned int end = m_compare.length();
+		if (end > array.length())
+			end = array.length();
+		if (m_compare.length() != array.length())
+			Debug(c_str(),DebugNote,"Different lengths! Compare %d data %d",m_compare.length(), array.length());
+		unsigned int i = 0;
+		for (;i < end;i ++) {
+			if (floatEqual(m_compare[i].real() ,array[i + m_comparePadding].real()) && 
+				floatEqual(m_compare[i].imag(), array[i + m_comparePadding].imag()))
+				continue;
+			Debug(c_str(),DebugWarn,"Values differ expected index %d (%g, %g)  data (%g,%g) at index %d real diff %f imag diff %f",
+			  i + m_comparePadding ,array[i + m_comparePadding].real(),array[i + m_comparePadding].imag(),
+			  m_compare[i].real(),m_compare[i].imag(),i,m_compare[i].real() - array[i + m_comparePadding].real(),
+			  m_compare[i].imag()- array[i + m_comparePadding].imag());
+			break;
+		}
+		if (i == end)
+			Debug(c_str(),DebugNote,"Data Mached!");
 	}
 	if (m_printStats) {
-		float min = 0,max = 0, poz = 0,neg = 0;
-		int tpoz = 0,tneg = 0;
+		float max = 0, rms = 0;
+		Complex mean(0,0);
 		for (unsigned int i = 0;i < len;i++) {
-			if (min > array[i].real())
-			min = array[i].real();
-			else if (max < array[i].real())
-			max = array[i].real();
-			if (array[i].real() < 0) {
-			neg += array[i].real();
-			tneg++;
-			continue;
-			}
-			poz += array[i].real();
-			tpoz++;
+			float power = array[i].mulConj();
+			if (power>max)
+				max = power;
+			mean += array[i];
+			rms += power;
 		}
-		Debug(c_str(),DebugNote,"Min %f max %f avg poz: %f avg neg: %f",
-			min,max,poz/tpoz,neg/tneg);
+		rms = ::sqrtf(rms/len);
+		mean = mean * (1.0F/len);
+		max = ::sqrtf(max);
+		Debug(c_str(),DebugNote,"mean %f%+fi max abs %f rms %f ",
+			mean.real(), mean.imag(), max, rms);
 	}
 }
 
@@ -358,23 +355,20 @@ void DataComparator::dump(const FloatVector& array)
 			Debug(c_str(),DebugNote,"Data Mached!");
 	}
 	if (m_printStats) {
-		float min = 0,max = 0, poz = 0,neg = 0;
-		int tpoz = 0,tneg = 0;
+		int len = array.length();
+		float mean = 0, max = 0, rms = 0;
 		for (unsigned int i = 0;i < len;i++) {
-			if (min > array[i])
-			min = array[i];
-			else if (max < array[i])
-			max = array[i];
-			if (array[i] < 0) {
-				neg += array[i];
-				tneg++;
-				continue;
-			}
-			poz += array[i];
-			tpoz++;
+			float power = array[i] * array[i];
+			if (power>max)
+				max = power;
+			mean += array[i];
+			rms += power;
 		}
-		Debug(c_str(),DebugNote,"Min %f max %f avg poz: %f avg neg: %f",
-			  min,max,poz/tpoz,neg/tneg);
+		rms = ::sqrtf(rms/len);
+		mean = mean * (1.0F/len);
+		max = ::sqrtf(max);
+		Debug(c_str(),DebugNote,"mean %f max abs %f rms %f ",
+			mean, max, rms);
 	}
 }
 
