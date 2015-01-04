@@ -386,8 +386,8 @@ bool BuildTx::test()
 		float Fs = K * F0;
 		// Ls: the length of a GSM slot sampled at K
 		unsigned int Ls = 156.25 * K;
-		// Generate Laurent pulse approximation sampled at Fs, length: Lp = 4 * K
-		unsigned int Lp = 4 * (unsigned int)K;
+		// Generate Laurent pulse approximation sampled at Fs
+		unsigned int Lp = 3 * s_oversampling + 1;
 		m_laurentPA.m_data.resize(Lp);
 		float* hp = m_laurentPA.m_data.data();
 		for (unsigned int n = 0; n < m_laurentPA.m_data.length(); n++) {
