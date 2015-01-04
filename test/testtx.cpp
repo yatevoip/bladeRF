@@ -395,7 +395,7 @@ bool BuildTx::test()
 			float f2 = f * f;
 			// DAB - Note sign error in the first term in the line below.
 			float g = -1.138 * f2 - 0.527 * f2 * f2;
-			hp[n] = (1.0F / K) * 0.96 * ::expf(g);
+			hp[n] = 0.96 * ::expf(g);
 		}
 		CHECKPOINT(LaurentPA,0);
 		// Generate Laurent frequency shift vector
@@ -429,7 +429,7 @@ bool BuildTx::test()
 				float* v = a.m_v.m_data.data();
 				static const int rampOffset = 4 * s_oversampling;
 				for (unsigned int n = 0; n < a.m_v.m_data.length(); n++) {
-					if (n%8) continue;
+					if (n%s_oversampling) continue;
 					unsigned int idx = n / s_oversampling;;
 					if (idx >= a.m_inBits.m_data.length())
 						break;
@@ -439,8 +439,9 @@ bool BuildTx::test()
 
 				// TODO - These power ramp profiles need to be verified on the CMD57.
 				// The spec for power ramping is GSM 05.05 Annex B.
-				// The signal must start down-ramp within 10 us (2.7 symbols).
+				// The signal must start down-ramp within 10 us (2.7 symbols), down at least 6 dB.
 				// The signal falls at least 30 dB within 18 us (4.9 symbols); 6 dB per symbol.
+				// -6 dB is amplitude factor of 0.5.
 
 				// DAB - Power ramping - leading edge.
 				float vLead = v[rampOffset];
