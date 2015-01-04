@@ -18,8 +18,11 @@
 ;  false: all 0
 ;  filler: Input is a filler
 ;  bits sequence
-; Defaults to all 1
-;arfcn0=
+; Defaults to a TSC2 normal burst with random data
+;arfcn0=true
+arfcn1=filler
+arfcn2=filler
+arfcn3=filler
 
 
 [output]

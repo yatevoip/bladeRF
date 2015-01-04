@@ -27,6 +27,18 @@
 
 using namespace TelEngine;
 
+// GSM training sequences
+static int s_normalTraining[8][26] = {
+    {0,0,1,0,0,1,0,1,1,1,0,0,0,0,1,0,0,0,1,0,0,1,0,1,1,1},
+    {0,0,1,0,1,1,0,1,1,1,0,1,1,1,1,0,0,0,1,0,1,1,0,1,1,1},
+    {0,1,0,0,0,0,1,1,1,0,1,1,1,0,1,0,0,1,0,0,0,0,1,1,1,0},
+    {0,1,0,0,0,1,1,1,1,0,1,1,0,1,0,0,0,1,0,0,0,1,1,1,1,0},
+    {0,0,0,1,1,0,1,0,1,1,1,0,0,1,0,0,0,0,0,1,1,0,1,0,1,1},
+    {0,1,0,0,1,1,1,0,1,0,1,1,0,0,0,0,0,1,0,0,1,1,1,0,1,0},
+    {1,0,1,0,0,1,1,1,1,1,0,1,1,0,0,0,1,0,1,0,0,1,1,1,1,1},
+    {1,1,1,0,1,1,1,1,0,0,0,1,0,0,1,0,1,1,1,0,1,1,1,1,0,0},
+};
+
 static const String s_arfcnIn0('0',GSM_BURST_LENGTH);
 static const String s_arfcnIn1('1',GSM_BURST_LENGTH);
 static const float s_gsmSymbolRate = 13e6 / 48.0;
@@ -293,9 +305,31 @@ BuildTx::BuildTx()
 		a.m_filler = (s == "filler");
 		if (!a.m_filler) {
 			if (s.isBoolean())
+				// Configuratio of "true" or "false" selects all-1 or all-0 burst.
 				s = s.toBoolean() ? s_arfcnIn1: s_arfcnIn0;
-			else if (!s)
-				s = s_arfcnIn1;
+			else if (!s) {
+				// If nothing specfied, build a normal burst with random payload fields.
+				// The fields of the normal burst are defined in GSM 05.03 3.1.4 and GSM 05.01 5.2.
+				static const unsigned s_tailLen = 3;
+				static const unsigned s_payloadLen = 58;
+				static const unsigned s_midambleLen = 26;
+				static const char* s_digits[2]={"0","1"};
+				// tail bits
+				for (unsigned i=0; i<s_tailLen; i++)
+					s.append("0");
+				// payload bits
+				for (unsigned i=0; i<s_payloadLen; i++)
+					s.append(s_digits[random()%2]);
+				// midamble
+				for (unsigned i=0; i<s_midambleLen; i++)
+					s.append(s_digits[s_normalTraining[2][i]]);
+				// payload bits
+				for (unsigned i=0; i<s_payloadLen; i++)
+					s.append(s_digits[random()%2]);
+				// tail bits
+				for (unsigned i=0; i<s_tailLen; i++)
+					s.append("0");
+			}
 			a.m_inBits.m_data.resize(GSM_BURST_LENGTH);
 			if (!a.m_inBits.readBits(s)) {
 				invalidConfParam(name,s,*params);
@@ -395,39 +429,26 @@ bool BuildTx::test()
 				float* v = a.m_v.m_data.data();
 				static const int rampOffset = 4 * s_oversampling;
 				for (unsigned int n = 0; n < a.m_v.m_data.length(); n++) {
-					unsigned int idx = ::floor(n / K);
+					if (n%8) continue;
+					unsigned int idx = n / s_oversampling;;
 					if (idx >= a.m_inBits.m_data.length())
 						break;
-					// DAB - Note the 4-symbol shift to allow for power ramp shaping.
+					// DAB - Note the shift to allow for power ramp shaping.
 					v[n+rampOffset] = 2 * b[idx] - 1;
 				}
 
 				// TODO - These power ramp profiles need to be verified on the CMD57.
 				// The spec for power ramping is GSM 05.05 Annex B.
 				// The signal must start down-ramp within 10 us (2.7 symbols).
-				// The signal falls at least 30 dB within 18 us (4.9 symbols).
-				// 4.9 symbols is 39.2 samples at 8x, so -1 dB per sample will meet the mask spec.
-				// -1 dB is 0.89. -1.5 dB is 0.707.
+				// The signal falls at least 30 dB within 18 us (4.9 symbols); 6 dB per symbol.
 
 				// DAB - Power ramping - leading edge.
-				float g = 1.0F;
-				float vLead = v[rampOffset+1];
-				for (int i=0; i<2*s_oversampling; i++) {
-					float val = vLead*g;
-					g *= 0.7071F;
-					//float val = (vLead * i) / s_oversampling;
-					v[rampOffset-i-1] = val;
-				}
+				float vLead = v[rampOffset];
+				v[rampOffset - s_oversampling] = vLead * 0.5F;
 
 				// DAB - Power ramping - trailing edge.
-				g = 1.0F;
-				float vTrail = v[148*s_oversampling+rampOffset-1];
-				for (int i=0; i<2*s_oversampling; i++) {
-					//float val = (vLead * (s_oversampling-i-1)) / s_oversampling;
-					float val = vTrail*g;
-					g *= 0.7071F;
-					v[148*s_oversampling+rampOffset+i] = val;
-				}
+				float vTrail = v[147*s_oversampling+rampOffset];
+				v[147*s_oversampling+rampOffset+s_oversampling] = vTrail * 0.5F;
 
 				CHECKPOINT(ARFCNv,&a);
 				// Calculate w: w[n] = v[n] * s[n]
