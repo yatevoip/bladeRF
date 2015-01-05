@@ -78,7 +78,7 @@ static int s_n0 = (s_hqLength -1) / 2;
 FloatVector s_hq;
 QmfBlock* s_qmfs[15];
 bool s_normalBurst = true;
-unsigned int s_timeslot = 0;
+unsigned int s_tsc = 2;
 float s_powerMin = 1.0;
 #define FLOATABS 20e-6
 
@@ -529,28 +529,28 @@ void checkHQ(NamedList& params)
 	printf("\nHQ: len %d\n%s\n",s_hqLength,dump.c_str());
 }
 
-ComplexArray* convolve(ComplexArray& in, FloatVector& h)
+ComplexArray* correlate(ComplexArray& in, FloatVector& h)
 {
 	ComplexArray padded(in.length() + h.length());
 	unsigned int n0 = (h.length() - 1) / 2;
 	for (unsigned int i = 0;i < in.length();i++)
-	padded[i + n0] = in[i];
+		padded[i + n0] = in[i];
 
 	ComplexArray* out = new ComplexArray(in.length());
 	for (unsigned int i = 0;i < in.length();i++) {
 		for (unsigned int j = 0;j < h.length();j++) {
 			Complex c;
-			Complex::multiplyF(c,padded[i + j],h[h.length() - (j + 1)]);
+			Complex::multiplyF(c,padded[i + j],h[j]);
 			
 			(*out)[i] += c;
-	//		Debug(DebugAll, " i %d j %d padded [%d] ( %g %g) h[%d] %f  out[i] = (%g % g)",
-	//		  i,j,i+j,padded[i + j].real(),padded[i + j].imag(),h.length() - (j + 1),h[h.length() - (j + 1)],(*out)[i].real(),(*out)[i].imag());
+			//Debug(DebugAll, " i %d j %d padded [%d] ( %g %g) h[%d] %f  out[i] = (%g % g)",
+			 // i,j,i+j,padded[i + j].real(),padded[i + j].imag(),j,h[j],(*out)[i].real(),(*out)[i].imag());
 		}
 	}
 	return out;
 }
 
-ComplexArray* convolveConj(ComplexArray& in, ComplexArray& h)
+ComplexArray* correlate(ComplexArray& in, ComplexArray& h)
 {
 	ComplexArray padded(in.length() + h.length());
 	unsigned int n0 = (h.length() - 1) / 2;
@@ -559,14 +559,14 @@ ComplexArray* convolveConj(ComplexArray& in, ComplexArray& h)
 	
 	ComplexArray conj(h.length());
 	for (unsigned int i = 0;i < h.length();i++) {
-		h[i].imag(-h[i].imag());
+		conj[i].real(h[i].real());
+		conj[i].imag(-h[i].imag());
 	}
 	
 	ComplexArray* out = new ComplexArray(in.length());
 	for (unsigned int i = 0;i < in.length();i++) {
 		for (unsigned int j = 0;j < h.length();j++) {
-			Complex t = h[h.length() - (j + 1)];
-			(*out)[i] += padded[i + j] * t;
+			(*out)[i] += padded[i + j] * conj[j];
 		}
 	}
 	return out;
@@ -582,6 +582,13 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 	Debug(DebugNote,"Ignoring Data! Power to low");
 	return;
 	}*/
+
+	// DAB - This implements a -pi/2 frequency shift.
+	ComplexArray xf(inData->m_lowData.length());
+	static const Complex s[] = {Complex(1,0), Complex(0,-1), Complex(-1,0), Complex(0,1)};
+	for (unsigned int i = 0; i < inData->m_lowData.length(); i++) {
+		xf[i] = s[i%4]*inData->m_lowData[i];
+	}
 	
 	// TODO implement me!!
 	// Channel Estimation
@@ -592,25 +599,31 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 		int endIndex = startIndex + 26;
 		int index = 0;
 		for (unsigned int i = startIndex; i < endIndex;i++,index++)
-			x[index] = inData->m_lowData[i];
+			x[index] = xf[i];
 		
+		// Correlating with the middle 16 symbols of the training seqeunce
+		// gives a clean autocorrealtion in the middle 11 samples of the result.
 		FloatVector sm(16);
-		int* s = s_normalTraining[s_timeslot] + 21;
+		int* s = s_normalTraining[s_tsc] + 5;
 		for (unsigned int i = 0; i < 16;i++,s++)
 			sm[i] = *s ? 1 : -1;
-		he = convolve(x,sm);
+
+		// Only the middle 11 samples actually need to be calculated in he.
+		//he = correlate(xf,sm);
+		he = correlate(x,sm);
+
 	} else {
 		ComplexArray x(41);
 		int index = 0;
 		for (unsigned int i = 8; i < 48;i++,index++)
-			x[index] = inData->m_lowData[i];
+			x[index] = xf[i];
 		
-		FloatVector sm(16);
+		FloatVector sm(41);
 		int* s = s_accessTraining;
-		for (unsigned int i = 0; i < 16;i++,s++)
+		for (unsigned int i = 0; i < 41;i++,s++)
 			sm[i] = *s ? 1 : -1;
 		
-		he = convolve(x,sm);
+		he = correlate(x,sm);
 	}
 	String arfcnPrefix(arfcnIndex);
 	arfcnPrefix << ".";
@@ -623,7 +636,7 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 		break;
 	}
 	
-	ComplexArray* w = convolveConj(inData->m_lowData,*he);
+	ComplexArray* w = correlate(inData->m_lowData,*he);
 	TelEngine::destruct(he);
 
 	FloatVector u(w->length());
@@ -714,9 +727,10 @@ extern "C" int main(int argc, const char** argv, const char** envp)
 		return 0;
 	}
 	s_normalBurst = dataIn->getBoolValue(YSTRING("normalBurst"),s_normalBurst);
-	s_timeslot = dataIn->getBoolValue(YSTRING("timeslot"),s_timeslot);
+	s_tsc = dataIn->getIntValue(YSTRING("tsc"),s_tsc);
 	
-	DataComparator* indc =  new DataComparator("In_data");
+	//DataComparator* indc =  new DataComparator("In_data");
+	DataComparator* indc =  new DataComparator("in_data");
 	indc->initialize(*dataIn);
 	if (indc->m_compare.length() <= 0) {
 		Debug("main",DebugNote,"Unable to load input data!");
@@ -730,7 +744,7 @@ extern "C" int main(int argc, const char** argv, const char** envp)
 	ComplexArray ind(indc->m_compare.length());
 	// Pad the data with zeros
 	for (unsigned int i = 0;i < indc->m_compare.length();i++)
-		ind[i].set(indc->m_compare[i].real() / 100000,indc->m_compare[i].imag() / 100000);
+		ind[i].set(indc->m_compare[i].real(),indc->m_compare[i].imag());
 	
 	TelEngine::destruct(indc);
 	// Run the data trough qmf filter
