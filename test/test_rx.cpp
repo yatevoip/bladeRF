@@ -79,6 +79,10 @@ FloatVector s_hq;
 QmfBlock* s_qmfs[15];
 bool s_normalBurst = true;
 unsigned int s_tsc = 2;
+unsigned int s_delay = 0;
+unsigned int s_imageDelay = 0;
+unsigned int s_imageGain = 0;
+unsigned int s_imagePhase = 0;
 float s_powerMin = 1.0;
 #define FLOATABS 20e-6
 
@@ -587,12 +591,13 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 	ComplexArray xf(inData->m_lowData.length());
 	static const Complex s[] = {Complex(1,0), Complex(0,-1), Complex(-1,0), Complex(0,1)};
 	for (unsigned int i = 0; i < inData->m_lowData.length(); i++) {
-		xf[i] = s[i%4]*inData->m_lowData[i];
+		xf[i] = s[i%4] * inData->m_lowData[i];
 	}
 	
 	// TODO implement me!!
 	// Channel Estimation
 	ComplexArray* he = 0;
+	int center;
 	if (s_normalBurst) {
 		ComplexArray x(26);
 		int startIndex = inData->m_lowData.length() / 2 - 13;
@@ -603,14 +608,16 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 		
 		// Correlating with the middle 16 symbols of the training seqeunce
 		// gives a clean autocorrealtion in the middle 11 samples of the result.
+		// The scaling factor gives a unit-gain filter.
 		FloatVector sm(16);
 		int* s = s_normalTraining[s_tsc] + 5;
+		static const float scv = 1.0F / 16.0F;
 		for (unsigned int i = 0; i < 16;i++,s++)
-			sm[i] = *s ? 1 : -1;
+			sm[i] = *s ? scv : -scv;
 
 		// Only the middle 11 samples actually need to be calculated in he.
-		//he = correlate(xf,sm);
 		he = correlate(x,sm);
+		center = 12;
 
 	} else {
 		ComplexArray x(41);
@@ -623,20 +630,44 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 		for (unsigned int i = 0; i < 41;i++,s++)
 			sm[i] = *s ? 1 : -1;
 		
+		// The entire correlation is needed for initial delay estimation.
+		// Only the central 21 samples form a channel estimate.
 		he = correlate(x,sm);
+		center = 40;
 	}
+
+	// At this point, he contains a channel estimate centered at "center".
+
+	// Find the peak power in the channel estimate.
+	float max = 0;
+	int maxIndex;
+	for (unsigned i=center-5; i<he->length(); i++) {
+		float pwr = (*he)[i].mulConj();
+		if (pwr<max) continue;
+		max = pwr;
+		maxIndex = i;
+	}
+
+	// TOA error.  Negative for early, positive for late.
+	int toaError = maxIndex - center;
+	Debug(DebugAll,"TOA error %d", toaError);
+
+	ComplexArray heTrim(11);
+	for (unsigned i=0; i<11; i++)
+		heTrim[i] = (*he)[center-5+i];
+
 	String arfcnPrefix(arfcnIndex);
 	arfcnPrefix << ".";
 	NamedList* dhe = cfg.getSection("demod-he");
 	while (dhe) {
 		DataComparator* cHe = getDC("demod-he",arfcnPrefix,*dhe);
 		if (cHe)
-			cHe->dump(*he);
+			cHe->dump(heTrim);
 		TelEngine::destruct(cHe);
 		break;
 	}
-	
-	ComplexArray* w = correlate(inData->m_lowData,*he);
+
+	ComplexArray* w = correlate(xf,heTrim);
 	TelEngine::destruct(he);
 
 	FloatVector u(w->length());
@@ -653,23 +684,24 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 		break;
 	}
 
+	// RMS estimate from middle 5 symbols
 	float psum = 0;
 	for (unsigned int i = 72; i <= 76;i++)
-	psum += u[i] * u[i];
+		psum += u[i] * u[i];
 	float p = 0.2 * psum;
-	
 	float sqrtP = ::sqrt(p);
 	
-	
+	// Normalize amplitude to +1..-1.
 	FloatVector v(u.length());
 	for (unsigned int i = 0; i < v.length();i++)
-	v[i] = u[i] / sqrtP;
+		v[i] = u[i] / sqrtP;
    
-	
-	
+	// Map the -1..+1 range to 0..1 with hard limits.
 	FloatVector wf(u.length());
 	for (unsigned int i = 0; i < u.length();i++)
-	wf[i] = (u[i] + 1) / 2;
+		if (v[i]>1.0F) wf[i]=1.0F;
+		else if (v[i]<-1.0F) wf[i]=0.0F;
+		else wf[i] = (v[i] + 1.0F) * 0.5;
 	
 	NamedList* dout = cfg.getSection("demod-out");
 	while (dout) {
@@ -728,6 +760,10 @@ extern "C" int main(int argc, const char** argv, const char** envp)
 	}
 	s_normalBurst = dataIn->getBoolValue(YSTRING("normalBurst"),s_normalBurst);
 	s_tsc = dataIn->getIntValue(YSTRING("tsc"),s_tsc);
+	s_delay = dataIn->getIntValue(YSTRING("delay"),s_delay);
+	s_imageGain = dataIn->getIntValue(YSTRING("image-gain"),s_imageGain);
+	s_imageDelay = dataIn->getIntValue(YSTRING("image-delay"),s_imageDelay);
+	s_imagePhase = dataIn->getIntValue(YSTRING("image-delay"),s_imagePhase);
 	
 	//DataComparator* indc =  new DataComparator("In_data");
 	DataComparator* indc =  new DataComparator("in_data");
@@ -743,9 +779,19 @@ extern "C" int main(int argc, const char** argv, const char** envp)
 	
 	ComplexArray ind(indc->m_compare.length());
 	// Pad the data with zeros
-	for (unsigned int i = 0;i < indc->m_compare.length();i++)
-		ind[i].set(indc->m_compare[i].real(),indc->m_compare[i].imag());
-	
+	// For testing, shift the input data by a given number of samples.
+	// And and add an optional multipath image at a level of imageGain/10.
+	float imagePhi = s_imagePhase * PI / 180.0F;
+	Complex cImageGain;
+	cImageGain.real(s_imageGain * 0.1F * ::cosf(imagePhi));
+	cImageGain.imag(s_imageGain * 0.1F * ::sinf(imagePhi));
+	for (int i = 0;i < indc->m_compare.length();i++) {
+		if ((i-(int)s_delay)>=0)
+			ind[i] = indc->m_compare[i-(int)s_delay];
+		if ((i-(int)s_delay-(int)s_imageDelay)>=0)
+			ind[i] += indc->m_compare[i-(int)s_delay-(int)s_imageDelay] * cImageGain;
+	}
+
 	TelEngine::destruct(indc);
 	// Run the data trough qmf filter
 	qmf(s_qmfs[0],ind);

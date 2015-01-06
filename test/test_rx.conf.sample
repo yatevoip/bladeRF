@@ -38,215 +38,247 @@
 ;	    NOTE The parameters have to be padded with "arfcn_index."
 
 
+; additional parameters for data_in
+: delay - delay the input signal by this number of samples
+; image-delay - insert an image delayed by this many samples
+; image-gain - image gain, linear scale x10
 [data_in]
-compare_file=rx_in_data.txt
-file_prefix=input-data:
-
-[hq]
-compare_file=rx_in_data.txt
-file_prefix=hb:
 output=true
 prefix=x=[
-postfix=];plot(x);
+postfix=];
+compare_file=rx_in_data.txt
+file_prefix=input-data:
+print_stats=true
+delay=4
+image-delay=24
+image-gain=2
+image-phase=90
+
+[hq]
+;compare_file=rx_in_data.txt
+;file_prefix=hq:
+delay=8
+output=true
+prefix=hq=[
+postfix=];
 dump_format=%f 
 is_float=true
 print_stats=true
 
 [demod-he]
 0.output=true
-0.compare_file=rx_in_data.txt
-0.file_prefix=demod-he:0:
+;0.compare_file=rx_in_data.txt
+;0.file_prefix=demod-he:0:
+0.print_stats=true
 
 [demod-u]
 0.output=true
 0.dump_format= %f 
-0.compare_file=rx_in_data.txt
-0.file_prefix=demod-u:0:
+;0.compare_file=rx_in_data.txt
+;0.file_prefix=demod-u:0:
 0.is_float=true
+0.print_stats=true
 
 [demod-out]
 0.output=true
 0.dump_format= %f 
-0.compare_file=rx_in_data.txt
-0.file_prefix=demod-out:0:
+;0.compare_file=rx_in_data.txt
+;0.file_prefix=demod-out:0:
 0.is_float=true
+0.print_stats=true
 
 [estimate]
 0.output=true
 0.dump_format= %.0f 
 0.is_float=true
-0.compare_file=rx_in_data.txt
-0.file_prefix=output-data:0:
+;0.compare_file=rx_in_data.txt
+;0.file_prefix=output-data:0:
+0.print_stats=true
 
  
 [qmf(0)]
-;fs.output=true
-fs.prefix=x=[
-fs.postfix=];plot(log(abs(fft(x))));
-fs.print-len=8
-fs.compare_file=rx_in_data.txt
+fs.output=true
+fs.prefix=qmf0fs=[
+fs.postfix=];
+fs.print-len=-1
+fs.print_stats=true
+;fs.compare_file=rx_in_data.txt
 ;fs.compare_padding=11
-fs.file_prefix=qmf0.fs:
+;fs.file_prefix=qmf0.fs:
 
-;x.output=true
-x.prefix=x=[
-x.postfix=];plot(log(abs(fft(x))));
-x.print-len=100
-x.compare_file=rx_in_data.txt
-;;x.compare_padding=11
-x.file_prefix=qmf0.x:
+x.output=true
+x.prefix=qmf0x=[
+x.postfix=];
+x.print-len=-1
+x.print_stats=true
+;x.compare_file=rx_in_data.txt
+;x.compare_padding=11
+;x.file_prefix=qmf0.x:
 x.print_stats=true
 
-;xp.output=true
-xp.prefix=x=[
-xp.postfix=];plot(log(abs(fft(x))));
-xp.print-len=23
-xp.compare_file=rx_in_data.txt
-;;xp.compare_padding=11
-xp.file_prefix=qmf0.xp:
+xp.output=true
+xp.prefix=qmf0xp=[
+xp.postfix=];
+xp.print-len=-1
+xp.print_stats=true
+;xp.compare_file=rx_in_data.txt
+;xp.compare_padding=11
+;xp.file_prefix=qmf0.xp:
 
-;w.output=true
-w.prefix=x=[
-w.postfix=];plot(log(abs(fft(x))));
-;w.print-len=8
-w.compare_file=rx_in_data.txt
-;;w.compare_padding=11
-w.file_prefix=qmf0.w:
+w.output=true
+w.prefix=qmf0w=[
+w.postfix=];
+w,print_stats=true
+w.print-len=-1
+;w.compare_file=rx_in_data.txt
+;w.compare_padding=11
+;w.file_prefix=qmf0.w:
 
 
 [qmf(1)]
 ;fs.output=true
-fs.prefix=x=[
-fs.postfix=];plot(log(abs(fft(x))));
-fs.print-len=8
-fs.compare_file=rx_in_data.txt
+fs.prefix=qmf1fs=[
+fs.postfix=]
+fs.print-len=-1
+fs.print_stats=true
+;fs.compare_file=rx_in_data.txt
 ;fs.compare_padding=11
-fs.file_prefix=qmf1.fs:
+;fs.file_prefix=qmf1.fs:
 
-;x.output=true
-x.prefix=x=[
-x.postfix=];plot(log(abs(fft(x))));
-;x.print-len=8
+x.output=true
+x.prefix=qmf1x=[
+x.postfix=]
+x.print-len=-1
+x.print_stats=true
 ;x.compare_file=rx_in_data.txt
 ;x.compare_padding=11
-x.file_prefix=qmf1.x:
+;x.file_prefix=qmf1.x:
 
-;xp.output=true
-xp.prefix=x=[
-xp.postfix=];plot(log(abs(fft(x))));
-xp.print-len=8
-xp.compare_file=rx_in_data.txt
+xp.output=true
+xp.prefix=qmf1xp=[
+xp.postfix=];
+xp.print-len=-1
+xp.print_stats=true
+;xp.compare_file=rx_in_data.txt
 ;xp.compare_padding=11
-xp.file_prefix=qmf1.xp:
+;xp.file_prefix=qmf1.xp:
 
-;w.output=true
-w.prefix=x=[
-w.postfix=];plot(log(abs(fft(x))));
-w.print-len=8
-w.compare_file=rx_in_data.txt
+w.output=true
+w.prefix=qmf1w=[
+w.postfix=];
+w.print-len=-1
+w.print_stats=true
+;w.compare_file=rx_in_data.txt
 ;w.compare_padding=11
-w.file_prefix=qmf1.w:
+;w.file_prefix=qmf1.w:
 
 [qmf(2)]
 ;fs.output=true
-fs.prefix=x=[
-fs.postfix=];plot(log(abs(fft(x))));
-fs.print-len=8
-fs.compare_file=rx_in_data.txt
+fs.prefix=qmf2fs=[
+fs.postfix=];
+fs.print-len=-1
+fs.print_stats=true
+;fs.compare_file=rx_in_data.txt
 ;fs.compare_padding=11
-fs.file_prefix=qmf2.fs:
+;fs.file_prefix=qmf2.fs:
 
-;x.output=true
-x.prefix=x=[
-x.postfix=];plot(log(abs(fft(x))));
-;x.print-len=8
+x.output=true
+x.prefix=qmf2x=[
+x.postfix=];
+x.print-len=-1
+x.print_stats=true
 ;x.compare_file=rx_in_data.txt
 ;x.compare_padding=11
-x.file_prefix=qmf2.x:
+;x.file_prefix=qmf2.x:
 
-;xp.output=true
-xp.prefix=x=[
-xp.postfix=];plot(log(abs(fft(x))));
-xp.print-len=8
-xp.compare_file=rx_in_data.txt
+xp.output=true
+xp.prefix=qmf2xp=[
+xp.postfix=];
+xp.print-len=-1
+xp.print_stats=true
+;xp.compare_file=rx_in_data.txt
 ;xp.compare_padding=11
-xp.file_prefix=qmf2.xp:
+;xp.file_prefix=qmf2.xp:
 
-;w.output=true
-w.prefix=x=[
-w.postfix=];plot(log(abs(fft(x))));
-w.print-len=8
-w.compare_file=rx_in_data.txt
+w.output=true
+w.prefix=qmf2w=[
+w.postfix=];
+w.print-len=-1
+w.print_stats=true
+;w.compare_file=rx_in_data.txt
 ;w.compare_padding=11
-w.file_prefix=qmf2.w:
+;w.file_prefix=qmf2.w:
 
 
 [qmf(3)]
 ;fs.output=true
-fs.prefix=x=[
-fs.postfix=];plot(log(abs(fft(x))));
-fs.print-len=8
-fs.compare_file=rx_in_data.txt
+fs.prefix=qmf3fs=[
+fs.postfix=];
+fs.print-len=-1
+;fs.compare_file=rx_in_data.txt
 ;fs.compare_padding=11
-fs.file_prefix=qmf3.fs:
+;fs.file_prefix=qmf3.fs:
 
 ;x.output=true
-x.prefix=x=[
-x.postfix=];plot(log(abs(fft(x))));
-x.print-len=8
+x.prefix=qmf3x=[
+x.postfix=];
+x.print-len=-1
 ;x.compare_file=rx_in_data.txt
 ;x.compare_padding=11
-x.file_prefix=qmf3.x:
+;x.file_prefix=qmf3.x:
 
 ;xp.output=true
-xp.prefix=x=[
-xp.postfix=];plot(log(abs(fft(x))));
-xp.print-len=8
-xp.compare_file=rx_in_data.txt
+xp.prefix=qmf3xp=[
+xp.postfix=];
+xp.print-len=-1
+;xp.compare_file=rx_in_data.txt
 ;xp.compare_padding=11
-xp.file_prefix=qmf3.xp:
+;xp.file_prefix=qmf3.xp:
 
 ;w.output=true
-w.prefix=x=[
-w.postfix=];plot(log(abs(fft(x))));
-w.print-len=8
-w.compare_file=rx_in_data.txt
+w.prefix=qmf3w=[
+w.postfix=];
+w.print-len=-1
+;w.compare_file=rx_in_data.txt
 ;w.compare_padding=11
-w.file_prefix=qmf3.w:
+;w.file_prefix=qmf3.w:
 
 
 [qmf(7)]
 ;fs.output=true
-fs.prefix=x=[
-fs.postfix=];plot(log(abs(fft(x))));
-fs.print-len=8
-fs.compare_file=rx_in_data.txt
+fs.prefix=qmf7fs=[
+fs.postfix=];
+fs.print-len=-1
+;fs.compare_file=rx_in_data.txt
 ;fs.compare_padding=11
-fs.file_prefix=qmf7.fs:
+;fs.file_prefix=qmf7.fs:
 
 x.output=true
-x.prefix=x=[
-x.postfix=];plot3(x);
-;x.print-len=8
+x.prefix=qmf7x=[
+x.postfix=];
+x.print-len=-1
+x.print_stats=true
 ;x.compare_file=rx_in_data.txt
 ;x.compare_padding=11
-x.file_prefix=qmf7.x:
+;x.file_prefix=qmf7.x:
 
 xp.output=true
-xp.prefix=x=[
-;xp.postfix=];plot(log(abs(fft(x))));
-xp.postfix=];plot3(x);
-;xp.print-len=8
-xp.compare_file=rx_in_data.txt
+xp.prefix=qmf7xp=[
+xp.postfix=];
+xp.postfix=];
+xp.print-len=-1
+xp.print_stats=true
+;xp.compare_file=rx_in_data.txt
 ;xp.compare_padding=11
-xp.file_prefix=qmf7.xp:
+;xp.file_prefix=qmf7.xp:
 xp.print_stats=true
 
-;w.output=true
-w.prefix=x=[
-w.postfix=];plot(log(abs(fft(x))));
-w.print-len=8
+w.output=true
+w.prefix=qmf7w=[
+w.postfix=];
+w.print-len=-1
+w.print_stats=true
 ;w.compare_file=rx_in_data.txt
 ;w.compare_padding=11
-w.file_prefix=qmf7.w:
+;w.file_prefix=qmf7.w:
 
