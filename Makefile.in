@@ -30,11 +30,11 @@ $(PROGS_BRF): LOCALFLAGS = @BRF_INC@
 
 $(PROGS_TESTS): CCFLAGS := $(CCFLAGS) -DHAVE_TEST
 
-transceiver-bladerf: bladerf/bladerf.cpp main.o $(MKDEPS) $(INCFILES) $(LIBS) $(LIBDEPS)
-	$(COMPILE) -o $@ $(LOCALFLAGS) $< main.o $(LIBS) $(LDFLAGS) $(LOCALLIBS) $(LIBTHR)
+transceiver-bladerf: bladerf/bladerf.cpp main.cpp $(MKDEPS) $(INCFILES) $(LIBS) $(LIBDEPS)
+	$(COMPILE) -o $@ $(LOCALFLAGS) $^  $(LIBS) $(LDFLAGS) $(LOCALLIBS) $(LIBTHR)
 
-transceiver-test: test/test.cpp main.o $(MKDEPS) $(INCFILES) $(LIBS) $(LIBDEPS)
-	$(COMPILE) -o $@ $(LOCALFLAGS) $< main.o $(LIBS) $(LDFLAGS) $(LOCALLIBS) $(LIBTHR)
+transceiver-test: test/test.cpp main.cpp $(MKDEPS) $(INCFILES) $(LIBS) $(LIBDEPS)
+	$(COMPILE) -o $@ $(LOCALFLAGS) $^  $(LIBS) $(LDFLAGS) $(LOCALLIBS) $(LIBTHR)
 
 transceiver-testtx: test/testtx.cpp $(MKDEPS) $(INCFILES) $(LIBS) $(LIBDEPS)
 	$(COMPILE) -o $@ $(LOCALFLAGS) $< $(LIBS) $(LDFLAGS) $(LOCALLIBS) $(LIBTHR)

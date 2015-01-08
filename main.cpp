@@ -128,7 +128,7 @@ static void startTransceiver(int argc, const char** argv)
 #ifdef HAVE_TEST
     if (!radio)
 	radio = new TestIface;
-#elif HAVE_BRF
+#elif defined(HAVE_BRF)
     if (!radio)
 	radio = new BrfIface;
 #endif
