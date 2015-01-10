@@ -633,7 +633,7 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 		// The entire correlation is needed for initial delay estimation.
 		// Only the central 21 samples form a channel estimate.
 		he = correlate(x,sm);
-		center = 40;
+		center = 25;
 	}
 
 	// At this point, he contains a channel estimate centered at "center".
