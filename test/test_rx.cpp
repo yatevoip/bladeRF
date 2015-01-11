@@ -615,30 +615,38 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 		for (unsigned int i = 0; i < 16;i++,s++)
 			sm[i] = *s ? scv : -scv;
 
-		// Only the middle 11 samples actually need to be calculated in he.
+		// Note: Only the middle 11 samples actually need to be calculated in he.
 		he = correlate(x,sm);
-		center = 12;
+		center = (he->length()/2)-1;
 
 	} else {
 		// isolate the synchronization sequence
-		ComplexArray x(41);
+		unsigned xlen = 8+20+63;
+		ComplexArray x(xlen);
 		int index = 0;
-		int syncStart = 8+4;
-		for (unsigned int i = syncStart; i < syncStart+41;i++,index++)
+		// To accomodate TOA offsets of up to 63 samples,
+		// we correlate the extended trailing seqeunce over a window of
+		// 8 + 20 + 63 samples, starting at the head of the burst window.
+		for (unsigned int i = 0; i < xlen;i++,index++)
 			x[index] = xf[i];
 		
+		// The actual extended training sequence is 41 symbols.
 		FloatVector sm(41);
 		int* s = s_accessTraining;
+		static const float scv = 1.0F / 41.0F;
 		for (unsigned int i = 0; i < 41;i++,s++)
-			sm[i] = *s ? 1 : -1;
+			sm[i] = *s ? scv : -scv;
 		
 		// The entire correlation is needed for initial delay estimation.
-		// Only the central 21 samples form a channel estimate.
+		// Only the central 21 samples form a channel estimate, but all are needed for TOA estimation.
+		// Note that we zero-delay point ("center") is NOT centered in he.
 		he = correlate(x,sm);
-		center = 25;
+		center = (8+41)/2;
 	}
 
 	// At this point, he contains a channel estimate with the zero-delay point at "center".
+
+	Debug(DebugAll,"Chan center at %d", center);
 
 	// Find the peak power in the channel estimate.
 	float max = 0;
