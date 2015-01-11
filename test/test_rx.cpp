@@ -620,14 +620,11 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 		center = (he->length()/2)-1;
 
 	} else {
-		// isolate the synchronization sequence
-		unsigned xlen = 8+20+63;
+		// isolate the synchronization sequence, plus up to 63 samples of delay
+		unsigned xlen = 41+63;
 		ComplexArray x(xlen);
 		int index = 0;
-		// To accomodate TOA offsets of up to 63 samples,
-		// we correlate the extended trailing seqeunce over a window of
-		// 8 + 20 + 63 samples, starting at the head of the burst window.
-		for (unsigned int i = 0; i < xlen;i++,index++)
+		for (unsigned int i = 8; i < xlen;i++,index++)
 			x[index] = xf[i];
 		
 		// The actual extended training sequence is 41 symbols.
@@ -638,10 +635,10 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 			sm[i] = *s ? scv : -scv;
 		
 		// The entire correlation is needed for initial delay estimation.
-		// Only the central 21 samples form a channel estimate, but all are needed for TOA estimation.
 		// Note that we zero-delay point ("center") is NOT centered in he.
 		he = correlate(x,sm);
-		center = (8+41)/2;
+		// TODO: *WHY* is 24 the value that works here?
+		center = 24;
 	}
 
 	// At this point, he contains a channel estimate with the zero-delay point at "center".
@@ -710,9 +707,6 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 	FloatVector u(w->length());
 	// Note that i is not unsigned here.
 	for (int i = 0; i < u.length();i++) {
-		int j = i + toaError;
-		if (j<0) continue;
-		if (j>=u.length()) continue;
 		u[i] = (*w)[i].real();
 	}
 	TelEngine::destruct(w);
@@ -726,7 +720,7 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 		break;
 	}
 
-	// RMS estimate from middle 5 symbols
+	// RMS power estimate from middle 5 symbols
 	float psum = 0;
 	for (unsigned int i = 72; i <= 76;i++)
 		psum += u[i] * u[i];
@@ -735,6 +729,8 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 	
 	// Normalize amplitude to +1..-1.
 	// and trim off the gaurd periods
+	// NOTE: The 4-sample offset might change depending on how data
+	// are frame-aligned when they come into the receiver.
 	FloatVector v(148);
 	for (unsigned int i = 0; i < 148;i++)
 		v[i] = u[i+4] / sqrtP;
