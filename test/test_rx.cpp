@@ -594,11 +594,11 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 		xf[i] = s[i%4] * inData->m_lowData[i];
 	}
 	
-	// TODO implement me!!
 	// Channel Estimation
 	ComplexArray* he = 0;
 	int center;
 	if (s_normalBurst) {
+		// isolate the recevied midamble
 		ComplexArray x(26);
 		int startIndex = inData->m_lowData.length() / 2 - 13;
 		int endIndex = startIndex + 26;
@@ -620,9 +620,11 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 		center = 12;
 
 	} else {
+		// isolate the synchronization sequence
 		ComplexArray x(41);
 		int index = 0;
-		for (unsigned int i = 8; i < 48;i++,index++)
+		int syncStart = 8+4;
+		for (unsigned int i = syncStart; i < syncStart+41;i++,index++)
 			x[index] = xf[i];
 		
 		FloatVector sm(41);
@@ -636,25 +638,52 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 		center = 25;
 	}
 
-	// At this point, he contains a channel estimate centered at "center".
+	// At this point, he contains a channel estimate with the zero-delay point at "center".
 
 	// Find the peak power in the channel estimate.
 	float max = 0;
+	float rms = 0;
 	int maxIndex;
 	for (unsigned i=center-5; i<he->length(); i++) {
 		float pwr = (*he)[i].mulConj();
+		rms += pwr;
 		if (pwr<max) continue;
 		max = pwr;
 		maxIndex = i;
 	}
+	rms/= (he->length() - (center-5));
+	Debug(DebugAll,"Chan max %f, rms %f, peak/mean %f", max, rms, max/rms);
+	// Note: The max/rms value in the debug line about is a good indicator of how hard this channel will
+	// be to demodulate. If we ever change the transcevier-mbts interface, this would be a
+	// useful metric for troubleshooting.
 
 	// TOA error.  Negative for early, positive for late.
 	int toaError = maxIndex - center;
 	Debug(DebugAll,"TOA error %d", toaError);
 
+	// indexing relationships
+	// maxIndex - actual t0 of the received signal channel estimate
+	// center - expected t0 of the received signal channel estimate
+	// toaError - the offset of the channel estaimte from its expected position, negative for early
+
+	// shift the received signal to compensate for TOA error.
+	// this shifts the signal so that the max power image is aligned to the expected position
+	// the alignment error is +/- 1/2 symbol period; fraction alignment is corrected be correlation with channel estaimte
+	ComplexArray xf2(xf.length());
+	for (int i=0; i<xf.length(); i++) {
+		int j = i + toaError;
+		if (j<0) continue;
+		if (j>=xf.length()) continue;
+		xf2[i]=xf[j];
+	}
+
+	// Trim and center the channel estaimte
+	// this shifts the channel estimate to put the max power peak in the center, +/- 1/2 symbol period
+	// the alignment error of heTrim is exactly the opposiate of the alignment error of xf2
 	ComplexArray heTrim(11);
 	for (unsigned i=0; i<11; i++)
-		heTrim[i] = (*he)[center-5+i];
+		// TODO - do we need to check the index validity here?
+		heTrim[i] = (*he)[maxIndex-5+i];
 
 	String arfcnPrefix(arfcnIndex);
 	arfcnPrefix << ".";
@@ -667,12 +696,17 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 		break;
 	}
 
-	ComplexArray* w = correlate(xf,heTrim);
+	ComplexArray* w = correlate(xf2,heTrim);
 	TelEngine::destruct(he);
 
 	FloatVector u(w->length());
-	for (unsigned int i = 0; i < u.length();i++)
+	// Note that i is not unsigned here.
+	for (int i = 0; i < u.length();i++) {
+		int j = i + toaError;
+		if (j<0) continue;
+		if (j>=u.length()) continue;
 		u[i] = (*w)[i].real();
+	}
 	TelEngine::destruct(w);
 
 	NamedList* dv = cfg.getSection("demod-u");
@@ -692,13 +726,14 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 	float sqrtP = ::sqrt(p);
 	
 	// Normalize amplitude to +1..-1.
-	FloatVector v(u.length());
-	for (unsigned int i = 0; i < v.length();i++)
-		v[i] = u[i] / sqrtP;
+	// and trim off the gaurd periods
+	FloatVector v(148);
+	for (unsigned int i = 0; i < 148;i++)
+		v[i] = u[i+4] / sqrtP;
    
 	// Map the -1..+1 range to 0..1 with hard limits.
-	FloatVector wf(u.length());
-	for (unsigned int i = 0; i < u.length();i++)
+	FloatVector wf(v.length());
+	for (unsigned int i = 0; i < v.length();i++)
 		if (v[i]>1.0F) wf[i]=1.0F;
 		else if (v[i]<-1.0F) wf[i]=0.0F;
 		else wf[i] = (v[i] + 1.0F) * 0.5;

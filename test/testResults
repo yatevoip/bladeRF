@@ -1,5 +1,6 @@
 Testing receiver performance.
 
+Normal Burst Testing
 
 Multipath, single image, r28 code
 
@@ -40,5 +41,8 @@ Syms	dB		%		%
 3.0		-14		0.7
 
 
-Image phase 90-deg
-Delay	Gain	Raw BER
+Access Burst Testing
+
+
+Still need to test delay compensation for later TOA.
+
