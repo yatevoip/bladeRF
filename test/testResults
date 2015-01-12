@@ -7,6 +7,8 @@ Multipath, single image, r28 code
 For raw BER, a bit error is defined as a bit that has the wrong value
 and a confidence of > 10%.
 
+sum(abs(bref .- dm) > 0.55)/148
+
 3 symbols of delay is 11 microseconds and about 3.3 km.
 
 Image phase 	90-deg	0-deg
@@ -42,7 +44,5 @@ Syms	dB		%		%
 
 
 Access Burst Testing
-
-
-Still need to test delay compensation for later TOA.
-
+Demod performance appears to be the same as for the normal burst.
+Checked TOA compensation up to 63 symbol periods.

@@ -802,7 +802,7 @@ extern "C" int main(int argc, const char** argv, const char** envp)
 	s_delay = dataIn->getIntValue(YSTRING("delay"),s_delay);
 	s_imageGain = dataIn->getIntValue(YSTRING("image-gain"),s_imageGain);
 	s_imageDelay = dataIn->getIntValue(YSTRING("image-delay"),s_imageDelay);
-	s_imagePhase = dataIn->getIntValue(YSTRING("image-delay"),s_imagePhase);
+	s_imagePhase = dataIn->getIntValue(YSTRING("image-phase"),s_imagePhase);
 	
 	//DataComparator* indc =  new DataComparator("In_data");
 	DataComparator* indc =  new DataComparator("in_data");
@@ -831,6 +831,7 @@ extern "C" int main(int argc, const char** argv, const char** envp)
 			ind[i] += indc->m_compare[i-(int)s_delay-(int)s_imageDelay] * cImageGain;
 	}
 
+	Debug(DebugAll,"Image delay %d samples, gain %f+%f",s_imageDelay,cImageGain.real(),cImageGain.imag());
 	TelEngine::destruct(indc);
 	// Run the data trough qmf filter
 	qmf(s_qmfs[0],ind);
