@@ -40,19 +40,20 @@
 
 ; additional parameters for data_in
 : delay - delay the input signal by this number of samples
-; image-delay - insert an image delayed by this many samples
+; image-delay - insert an image delayed by this many samples (additional to "delay" above)
 ; image-gain - image gain, linear scale x10
 [data_in]
+;normalBurst=false
 output=true
 prefix=x=[
 postfix=];
 compare_file=rx_in_data.txt
 file_prefix=input-data:
 print_stats=true
-delay=4
-image-delay=24
-image-gain=2
-image-phase=90
+delay=40
+image-delay=20
+image-gain=30
+;image-phase=0
 
 [hq]
 ;compare_file=rx_in_data.txt
