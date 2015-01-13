@@ -469,6 +469,7 @@ static void qmf(QmfBlock* q, ComplexArray& dataIn)
 	q->m_lowData.assign(w.length() / 2);
 	for (unsigned int i = 0;i < w.length() - s_n0;i += 2) {
 		q->m_lowData[i / 2] = xp[i] + w[i];
+		q->m_lowData[i/2] = q->m_lowData[i/2] * 0.5F;
 	}
 	qmf(s_qmfs[2* q->m_index + 1],q->m_lowData);
 	
@@ -476,6 +477,7 @@ static void qmf(QmfBlock* q, ComplexArray& dataIn)
 	q->m_highData.assign(w.length() / 2);
 	for (unsigned int i = 0;i < w.length() - s_n0;i+= 2) {
 		Complex::diff(q->m_highData[i / 2], xp[i], w[i]);
+		q->m_highData[i/2] = q->m_highData[i/2] * 0.5F;
 	}
 	qmf(s_qmfs[2 * q->m_index + 2],q->m_highData);
 }
@@ -488,6 +490,17 @@ float getPower(ComplexArray& dataIn)
 		power += dataIn[i].mulConj();
 	return 0.2 * power;
 }
+
+float getNoisePower(ComplexArray& dataIn)
+{
+	// Use the gaurd interval for noise measurement.
+	unsigned int center = 148 / 2;
+	float power = 0;
+	for (unsigned int i = 0; i<4; i++)
+		power += dataIn[dataIn.length()-i-1].mulConj();
+	return 0.25 * power;
+}
+
 
 void checkHQ(NamedList& params)
 {
@@ -579,13 +592,39 @@ ComplexArray* correlate(ComplexArray& in, ComplexArray& h)
 
 void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 {
+	//
+	// NOTE: inData should be scaled to +1..-1, where +/-1 represents the
+	// limits of the A/D converter in the receiver.
+	// For a 12-bit receiver like the BaldeRF, this means that the raw
+	// samples need to be divided by 2048 before feeding into the QMF tree.
+	// It also means that the overall gain of the QMF filter needs to be 1.0.
+	//
 	// Power detection
 	float power = getPower(inData->m_lowData);
-	Debug(DebugAll,"Power Level %f",power);
-	/*if (power < s_powerMin) {
-	Debug(DebugNote,"Ignoring Data! Power to low");
-	return;
-	}*/
+	float noise = getNoisePower(inData->m_lowData);
+	float SNR = power/noise;
+	Debug(DebugAll,"Power Level %f, noise %f, SNR %f",power, noise, SNR);
+	//
+	// TODO: The average noise level for this ARFCN needs to be tracked somewhere.
+	// It should be tracked on an ARFCN-by-ARFCN basis.
+	//
+	// TODO: Abort based on low SNR.
+	// The thresh should be configurable in dB. A good default is 2 dB.
+	// if (SNR < thr) {
+	//   Debug(level,"Discard burst due to low SNR %f", SNR);
+	//   ...
+	// }
+	//
+	// This should be reported in the burst message in dB wrt full scale.
+	// If the input data are properly scaled, this will always be negative.
+	float dB = 10*log10f(power);
+	//
+	// TODO: At this point, we should check max against a threshold and log an event if there is an overdrive of the recevier.
+	// The alert threshold should be configurable in dB wrt full scale. -2 dB is a good default.
+	// Continue processing, though.
+	// if  (dB > thr) 
+	//   Debug(someLevel, "receiver clipping on C%dT%d, %f dB", carrierIndex, slotNumber, dB);
+
 
 	// DAB - This implements a -pi/2 frequency shift.
 	ComplexArray xf(inData->m_lowData.length());
@@ -636,6 +675,7 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 		
 		// The entire correlation is needed for initial delay estimation.
 		// Note that we zero-delay point ("center") is NOT centered in he.
+		// NOTE: This correlation accounts for the majority of CPU usage in an idle BTS.
 		he = correlate(x,sm);
 		// TODO: *WHY* is 24 the value that works here?
 		center = 24;
@@ -657,11 +697,16 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 		maxIndex = i;
 	}
 	rms/= (he->length() - (center-5));
-	Debug(DebugAll,"Chan max %f, rms %f, peak/mean %f", max, rms, max/rms);
-	// Note: The max/rms value in the debug line about is a good indicator of how hard this channel will
-	// be to demodulate. If we ever change the transcevier-mbts interface, this would be a
-	// useful metric for troubleshooting.
-
+	float peakOverMean = max/rms;
+	Debug(DebugAll,"Chan max %f, rms %f, peak/mean %f", max, rms, peakOverMean);
+	//
+	// TODO: If peak/mean is too low, we can abort processing.
+	// The threshold should be configurable in dB; a good default is probably 3 dB.
+	// if (peakOVerMean < thr) {
+	//   Debug(someLevel,"Discarding burst on C%dT%d due to low peak/mean of %f",carrierIndex,slotNumber,peak/mean);
+	//   ...
+	// }
+	//
 	// TOA error.  Negative for early, positive for late.
 	int toaError = maxIndex - center;
 	Debug(DebugAll,"TOA error %d", toaError);
@@ -671,9 +716,18 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 	// center - expected t0 of the received signal channel estimate
 	// toaError - the offset of the channel estaimte from its expected position, negative for early
 
-	// shift the received signal to compensate for TOA error.
-	// this shifts the signal so that the max power image is aligned to the expected position
-	// the alignment error is +/- 1/2 symbol period; fraction alignment is corrected be correlation with channel estaimte
+	// TOA error should not exceed +/-2 for a normal burst.
+	// It indicates a failure of the closed loop timing control.
+	// Continue processing, but log the event.
+	// if (s_normalBurst) {
+	//   if (toaError>2 || toaError<-2) 
+	//     Debug(someLevel,"Excessive TOA error %d, C%dT%d, peak/mean %f", toaError, carrierIndex, slotNumber, peakOverMean);
+	// }
+
+	// Shift the received signal to compensate for TOA error.
+	// This shifts the signal so that the max power image is aligned to the expected position.
+	// The alignment error is +/- 1/2 symbol period;
+	// fractional alignment is corrected by correlation with channel estaimte.
 	ComplexArray xf2(xf.length());
 	for (int i=0; i<xf.length(); i++) {
 		int j = i + toaError;
@@ -682,12 +736,11 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 		xf2[i]=xf[j];
 	}
 
-	// Trim and center the channel estaimte
-	// this shifts the channel estimate to put the max power peak in the center, +/- 1/2 symbol period
-	// the alignment error of heTrim is exactly the opposiate of the alignment error of xf2
+	// Trim and center the channel estimate.
+	// This shifts the channel estimate to put the max power peak in the center, +/- 1/2 symbol period.
+	// The alignment error of heTrim is exactly the opposiate of the alignment error of xf2.
 	ComplexArray heTrim(11);
 	for (unsigned i=0; i<11; i++)
-		// TODO - do we need to check the index validity here?
 		heTrim[i] = (*he)[maxIndex-5+i];
 
 	String arfcnPrefix(arfcnIndex);
@@ -701,12 +754,14 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 		break;
 	}
 
+	// This correlation against the channel model serves as our equalizer.
 	ComplexArray* w = correlate(xf2,heTrim);
 	TelEngine::destruct(he);
 
+	// The imaginary part is just noise at this point.
+	// All of the decodable signal power is in the real part.
 	FloatVector u(w->length());
-	// Note that i is not unsigned here.
-	for (int i = 0; i < u.length();i++) {
+	for (unsigned i = 0; i < u.length();i++) {
 		u[i] = (*w)[i].real();
 	}
 	TelEngine::destruct(w);
@@ -725,7 +780,8 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 	for (unsigned int i = 72; i <= 76;i++)
 		psum += u[i] * u[i];
 	float p = 0.2 * psum;
-	float sqrtP = ::sqrt(p);
+	float sqrtP = ::sqrtf(p);
+
 	
 	// Normalize amplitude to +1..-1.
 	// and trim off the gaurd periods
