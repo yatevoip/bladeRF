@@ -47,6 +47,88 @@ delay	BER		chan peak/mean
 4.0		2.7		5.7
 
 
+Channel models from GSM 05.05 Appendix C.
+These are 3-tap approximations to the test cases in the spec.
+In all cases the first tap is 0 delay, 0 dB and implied.
+At 8x sampling, on delay step is 0.5 us.
+
+linear	dB
+0.1		-20
+0.2		-14
+0.3		-10
+0.4		-8
+0.5		-6
+0.6		-4.5
+0.7		-3
+0.8		-2
+0.9		-1
+1.0		0
+1.1		+1
+1.4		+3
+1.6		+4
+1.8		+5
+2.0		+6
+2.2		+7
+2.5		+8
+2.8		+9
+3.2		+10
+3.5		+11
+4.0		+12
+4.5		+13
+
+RAx
+image-delay=1
+image-gain=2
+
+ph1	peak/mean	BER %
+0	13.6		0
+90	13.8		0
+
+
+HTx
+image-delay=1
+image-gain=6
+image2-delay=30
+image2-gain=4
+
+ph1	peak/mean	BER %
+0	11.0		0.7
+90	6.0			3.4
+
+
+TUx
+image-delay=1
+image-gain=14
+image2-delay=3
+image2-gain=5
+
+ph1	peak/mean	BER %
+0	13.8		0
+90	11.4		0
+
+
+EQx
+image-delay=6
+image-gain=10
+image2-delay=13
+image2-gain=10
+
+ph1	peak/mean	BER %
+0	9.0			9.4
+90	9.5			10.1
+
+
+TIx
+image-delay=1
+image-gain=10
+
+ph1	peak/mean	BER %
+0	13.2		0
+90	8.7			22
+
+Note that the TIx 90 deg case is pathological case.
+
+
 
 Access Burst Testing
 Demod performance appears to be the same as for the normal burst.

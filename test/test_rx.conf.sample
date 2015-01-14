@@ -38,6 +38,33 @@
 ;	    NOTE The parameters have to be padded with "arfcn_index."
 
 
+; useful dB table for image gains
+;linear		dB
+;0.1		-20
+;0.2		-14
+;0.3		-10
+;0.4		-8
+;0.5		-6
+;0.6		-4.5
+;0.7		-3
+;0.8		-2
+;0.9		-1
+;1.0		0
+;1.1		+1
+;1.4		+3
+;1.6		+4
+;1.8		+5
+;2.0		+6
+;2.2		+7
+;2.5		+8
+;2.8		+9
+;3.2		+10
+;3.5		+11
+;4.0		+12
+;4.5		+13
+
+
+
 ; additional parameters for data_in
 : delay - delay the input signal by this number of samples
 ; image-delay - insert an image delayed by this many samples (additional to "delay" above)
@@ -50,10 +77,64 @@ postfix=];
 compare_file=rx_in_data.txt
 file_prefix=input-data:
 print_stats=true
-delay=40
-image-delay=20
-image-gain=30
+delay=0
+
+; test cases to be sure the multipath modeler actually works
+
+; 4 symbols
+;image-delay=32
+;image-gain=10
 ;image-phase=0
+;image-phase=90
+;image-phase=180
+
+; 2 and 2 symbols
+image-delay=16
+image-gain=10
+image-phase=0
+image2-delay=32
+image2-gain=10
+image2-phase=0
+
+
+
+; path-ology
+;image-delay=1
+;image-gain=10
+;image-phase=180
+
+
+; 3-tap approximations for multipath test cases
+; from GSM 05.05 annex C
+; do multiple tests with differing phases on the images
+;RAx
+;image-delay=1
+;image-gain=2
+;image-phase=90
+;HTx
+;image-delay=1
+;image-gain=6
+;image-phase=90
+;image2-delay=30
+;image2-gain=4
+;TUx
+;image-delay=1
+;image-gain=14
+;image-phase=90
+;image2-delay=3
+;image2-gain=5
+;EQx
+;image-delay=6
+;image-gain=10
+;image-phase=90
+;image2-delay=13
+;image2-gain=10
+;TIx
+image-delay=1
+image-gain=10
+image-phase=180
+
+
 
 [hq]
 ;compare_file=rx_in_data.txt

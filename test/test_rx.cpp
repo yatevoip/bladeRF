@@ -83,6 +83,9 @@ unsigned int s_delay = 0;
 unsigned int s_imageDelay = 0;
 unsigned int s_imageGain = 0;
 unsigned int s_imagePhase = 0;
+unsigned int s_image2Delay = 0;
+unsigned int s_image2Gain = 0;
+unsigned int s_image2Phase = 0;
 float s_powerMin = 1.0;
 #define FLOATABS 20e-6
 
@@ -859,6 +862,9 @@ extern "C" int main(int argc, const char** argv, const char** envp)
 	s_imageGain = dataIn->getIntValue(YSTRING("image-gain"),s_imageGain);
 	s_imageDelay = dataIn->getIntValue(YSTRING("image-delay"),s_imageDelay);
 	s_imagePhase = dataIn->getIntValue(YSTRING("image-phase"),s_imagePhase);
+	s_image2Gain = dataIn->getIntValue(YSTRING("image2-gain"),s_image2Gain);
+	s_image2Delay = dataIn->getIntValue(YSTRING("image2-delay"),s_image2Delay);
+	s_image2Phase = dataIn->getIntValue(YSTRING("image2-phase"),s_image2Phase);
 	
 	//DataComparator* indc =  new DataComparator("In_data");
 	DataComparator* indc =  new DataComparator("in_data");
@@ -877,17 +883,24 @@ extern "C" int main(int argc, const char** argv, const char** envp)
 	// For testing, shift the input data by a given number of samples.
 	// And and add an optional multipath image at a level of imageGain/10.
 	float imagePhi = s_imagePhase * PI / 180.0F;
+	float image2Phi = s_image2Phase * PI / 180.0F;
 	Complex cImageGain;
 	cImageGain.real(s_imageGain * 0.1F * ::cosf(imagePhi));
 	cImageGain.imag(s_imageGain * 0.1F * ::sinf(imagePhi));
+	Complex cImage2Gain;
+	cImage2Gain.real(s_image2Gain * 0.1F * ::cosf(image2Phi));
+	cImage2Gain.imag(s_image2Gain * 0.1F * ::sinf(image2Phi));
 	for (int i = 0;i < indc->m_compare.length();i++) {
 		if ((i-(int)s_delay)>=0)
 			ind[i] = indc->m_compare[i-(int)s_delay];
 		if ((i-(int)s_delay-(int)s_imageDelay)>=0)
 			ind[i] += indc->m_compare[i-(int)s_delay-(int)s_imageDelay] * cImageGain;
+		if ((i-(int)s_delay-(int)s_image2Delay)>=0)
+			ind[i] += indc->m_compare[i-(int)s_delay-(int)s_image2Delay] * cImage2Gain;
 	}
 
 	Debug(DebugAll,"Image delay %d samples, gain %f+%f",s_imageDelay,cImageGain.real(),cImageGain.imag());
+	Debug(DebugAll,"Image2 delay %d samples, gain %f+%f",s_image2Delay,cImage2Gain.real(),cImage2Gain.imag());
 	TelEngine::destruct(indc);
 	// Run the data trough qmf filter
 	qmf(s_qmfs[0],ind);
