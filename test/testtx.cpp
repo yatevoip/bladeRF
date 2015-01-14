@@ -374,10 +374,8 @@ bool BuildTx::test()
 
 	const float PI2 = 2.0F*PI;
 
-	// By doing this, oversampling is hardcoded to 8.
-	//static const unsigned Lp = 23;
-	//static const float c0[Lp] = {0.026918, 0.073218, 0.141964, 0.233205, 0.343419, 0.465660, 0.590386, 0.707107, 0.806432, 0.881080, 0.926900, 0.942285, 0.926900, 0.881080, 0.806432, 0.707107, 0.590386, 0.465660, 0.343419, 0.233205, 0.141964, 0.073218, 0.026918};
-
+	// By hardcoding the Laurent pulse oversampling is hardcoded to 8.
+	// But the QMF design in the receive side hardcodes the oversampling to 8 anyway.
 	static const unsigned Lp = 31;
 	static const float c0[Lp] = {0.00121, 0.00469, 0.01285, 0.02933, 0.05858, 0.10498, 0.17141, 0.25819, 0.36235, 0.47770, 0.59551, 0.70589, 0.79973, 0.87026, 0.91361, 0.92818, 0.91361, 0.87026, 0.79973, 0.70589, 0.59551, 0.47770, 0.36235, 0.25819, 0.17141, 0.10498, 0.05858, 0.02933, 0.01285, 0.00469, 0.00121};
 
