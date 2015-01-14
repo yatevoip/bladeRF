@@ -46,7 +46,7 @@ static const float s_gsmSymbolRate = 13e6 / 48.0;
 static int s_code = 0;
 static Configuration s_cfg;
 static unsigned int s_arfcns = 0;
-static unsigned int s_oversampling = 0;
+static unsigned int s_oversampling = 8;
 static bool s_cmpFromCfg = true;
 static String s_extraInputParams;
 static String s_extraResultParams;
@@ -374,6 +374,13 @@ bool BuildTx::test()
 
 	const float PI2 = 2.0F*PI;
 
+	// By doing this, oversampling is hardcoded to 8.
+	//static const unsigned Lp = 23;
+	//static const float c0[Lp] = {0.026918, 0.073218, 0.141964, 0.233205, 0.343419, 0.465660, 0.590386, 0.707107, 0.806432, 0.881080, 0.926900, 0.942285, 0.926900, 0.881080, 0.806432, 0.707107, 0.590386, 0.465660, 0.343419, 0.233205, 0.141964, 0.073218, 0.026918};
+
+	static const unsigned Lp = 31;
+	static const float c0[Lp] = {0.00121, 0.00469, 0.01285, 0.02933, 0.05858, 0.10498, 0.17141, 0.25819, 0.36235, 0.47770, 0.59551, 0.70589, 0.79973, 0.87026, 0.91361, 0.92818, 0.91361, 0.87026, 0.79973, 0.70589, 0.59551, 0.47770, 0.36235, 0.25819, 0.17141, 0.10498, 0.05858, 0.02933, 0.01285, 0.00469, 0.00121};
+
 	while (true) {
 		m_failedArfcn = 0xffffff;
 		CHECKPOINT(Input,0);
@@ -387,7 +394,8 @@ bool BuildTx::test()
 		// Ls: the length of a GSM slot sampled at K
 		unsigned int Ls = 156.25 * K;
 		// Generate Laurent pulse approximation sampled at Fs
-		unsigned int Lp = 3 * s_oversampling - 1;
+		// Extending this to 5 symbols does not change performance.
+		//unsigned int Lp = 3 * s_oversampling - 1;
 		m_laurentPA.m_data.resize(Lp);
 		float* hp = m_laurentPA.m_data.data();
 		for (unsigned int n = 0; n < m_laurentPA.m_data.length(); n++) {
@@ -395,7 +403,8 @@ bool BuildTx::test()
 			float f2 = f * f;
 			// DAB - Note sign error in the first term in the line below.
 			float g = -1.138 * f2 - 0.527 * f2 * f2;
-			hp[n] = 0.96 * ::expf(g);
+			//hp[n] = 0.96 * ::expf(g);
+			hp[n] = c0[n];
 		}
 		CHECKPOINT(LaurentPA,0);
 		// Generate Laurent frequency shift vector
@@ -405,8 +414,6 @@ bool BuildTx::test()
 		float omega = PI / (2.0F*K);
 		float phi = 0;
 		for (unsigned int n = 0; n < m_laurentFS.m_data.length(); n++) {
-			//float real = ::expf(0);
-			//float imag = ((n * PI) / (2 * K));
 			s[n].real(::cosf(phi));
 			s[n].imag(::sinf(phi));
 			phi += omega;
@@ -421,12 +428,13 @@ bool BuildTx::test()
 				// Data:
 				// b: Channel bits
 				// x: modulated output at rate Fs
-				// hp: Laurent pulse approximation sampled at Fs, length: Lp = 4 * K
+				// hp: Laurent pulse approximation sampled at Fs, length: Lp
 				// s: complex-valued frequency shift sequence
 				uint8_t* b = a.m_inBits.m_data.data();
 				// Calculate v: v[n] = 2 * b[n] * floor(n / K) - 1
 				a.m_v.m_data.assign(Ls);
 				float* v = a.m_v.m_data.data();
+				float vprev = 0;
 				static const int rampOffset = 4 * s_oversampling;
 				for (unsigned int n = 0; n < a.m_v.m_data.length(); n++) {
 					if (n%s_oversampling) continue;
@@ -434,10 +442,10 @@ bool BuildTx::test()
 					if (idx >= a.m_inBits.m_data.length())
 						break;
 					// DAB - Note the shift to allow for power ramp shaping.
-					v[n+rampOffset] = 2 * b[idx] - 1;
+					int nCurr = n + rampOffset;
+					v[nCurr] = 2.0F * b[idx] - 1.0F;
 				}
 
-				// TODO - These power ramp profiles need to be verified on the CMD57.
 				// The spec for power ramping is GSM 05.05 Annex B.
 				// The signal must start down-ramp within 10 us (2.7 symbols), down at least 6 dB.
 				// The signal falls at least 30 dB within 18 us (4.9 symbols); 6 dB per symbol.
