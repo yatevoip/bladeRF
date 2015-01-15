@@ -18,7 +18,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
  */
-
 // Compile: g++ ../sigproc.cpp test_rx.cpp  -I/usr/local/include/yate -lyate -g -o test_rx.out
 // Run: ./test_rx.out
 
@@ -86,6 +85,7 @@ unsigned int s_imagePhase = 0;
 unsigned int s_image2Delay = 0;
 unsigned int s_image2Gain = 0;
 unsigned int s_image2Phase = 0;
+unsigned int s_maxPropDelay = 63;
 float s_powerMin = 1.0;
 #define FLOATABS 20e-6
 
@@ -663,7 +663,7 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 
 	} else {
 		// isolate the synchronization sequence, plus up to 63 samples of delay
-		unsigned xlen = 41+63;
+		unsigned xlen = 41+s_maxPropDelay;
 		ComplexArray x(xlen);
 		int index = 0;
 		for (unsigned int i = 8; i < xlen;i++,index++)
@@ -701,11 +701,11 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 	}
 	rms/= (he->length() - (center-5));
 	float peakOverMean = max/rms;
-	Debug(DebugAll,"Chan max %f, rms %f, peak/mean %f", max, rms, peakOverMean);
+	Debug(DebugAll,"Chan max %f @ %d, rms %f, peak/mean %f", max, maxIndex, rms, peakOverMean);
 	//
 	// TODO: If peak/mean is too low, we can abort processing.
 	// The threshold should be configurable in dB; a good default is probably 3 dB.
-	// if (peakOVerMean < thr) {
+	// if (peakOverMean < thr) {
 	//   Debug(someLevel,"Discarding burst on C%dT%d due to low peak/mean of %f",carrierIndex,slotNumber,peak/mean);
 	//   ...
 	// }
@@ -858,13 +858,17 @@ extern "C" int main(int argc, const char** argv, const char** envp)
 	}
 	s_normalBurst = dataIn->getBoolValue(YSTRING("normalBurst"),s_normalBurst);
 	s_tsc = dataIn->getIntValue(YSTRING("tsc"),s_tsc);
+	// modeled delay of the input
 	s_delay = dataIn->getIntValue(YSTRING("delay"),s_delay);
+	// modeled multipath images
 	s_imageGain = dataIn->getIntValue(YSTRING("image-gain"),s_imageGain);
 	s_imageDelay = dataIn->getIntValue(YSTRING("image-delay"),s_imageDelay);
 	s_imagePhase = dataIn->getIntValue(YSTRING("image-phase"),s_imagePhase);
 	s_image2Gain = dataIn->getIntValue(YSTRING("image2-gain"),s_image2Gain);
 	s_image2Delay = dataIn->getIntValue(YSTRING("image2-delay"),s_image2Delay);
 	s_image2Phase = dataIn->getIntValue(YSTRING("image2-phase"),s_image2Phase);
+	// maximum RACH delay to try to track
+	s_maxPropDelay = dataIn->getIntValue(YSTRING("max-prop-delay"),s_maxPropDelay);
 	
 	//DataComparator* indc =  new DataComparator("In_data");
 	DataComparator* indc =  new DataComparator("in_data");
