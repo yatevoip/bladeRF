@@ -757,17 +757,25 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 		break;
 	}
 
-	// This correlation against the channel model serves as our equalizer.
-	ComplexArray* w = correlate(xf2,heTrim);
-	TelEngine::destruct(he);
-
-	// The imaginary part is just noise at this point.
-	// All of the decodable signal power is in the real part.
-	FloatVector u(w->length());
-	for (unsigned i = 0; i < u.length();i++) {
-		u[i] = (*w)[i].real();
+	// The scope below is the "equalizer".
+	// It is the part of the system most likely to change in the future.
+	// It will most defintely change when we go to EDGE.
+	// and should be isolated through an API.
+	// The inputs are xf2 and he.
+	// The output is u.
+	FloatVector u(xf2.length());
+	{
+		// This correlation against the channel model serves as our equalizer.
+		ComplexArray* w = correlate(xf2,heTrim);
+		TelEngine::destruct(he);
+	
+		// The imaginary part is just noise at this point.
+		// All of the decodable signal power is in the real part.
+		for (unsigned i = 0; i < u.length();i++) {
+			u[i] = (*w)[i].real();
+		}
+		TelEngine::destruct(w);
 	}
-	TelEngine::destruct(w);
 
 	NamedList* dv = cfg.getSection("demod-u");
 	while (dv) {
