@@ -757,6 +757,17 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 		break;
 	}
 
+	// Calculate delay spread, an important channel statistic.
+	float sumTSq = 0;
+	float sumP = 0;
+	for(int i=5; i<11; i++) {
+		float p = heTrim[i].mulConj();
+		sumTSq += (i-5)*(i-5)*p;
+		sumP += p;
+	}
+	float delaySpread = sqrt(sumTSq/sumP);
+	Debug(DebugAll,"Delay spread %f",delaySpread);
+
 	// The scope below is the "equalizer".
 	// It is the part of the system most likely to change in the future.
 	// It will most defintely change when we go to EDGE.
