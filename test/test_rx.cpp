@@ -722,10 +722,12 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 	// TOA error should not exceed +/-2 for a normal burst.
 	// It indicates a failure of the closed loop timing control.
 	// Continue processing, but log the event.
-	// if (s_normalBurst) {
-	//   if (toaError>2 || toaError<-2) 
-	//     Debug(someLevel,"Excessive TOA error %d, C%dT%d, peak/mean %f", toaError, carrierIndex, slotNumber, peakOverMean);
-	// }
+	if (s_normalBurst) {
+	  if (toaError>2 || toaError<-2)  {
+	  //  Debug(someLevel,"Excessive TOA error %d, C%dT%d, peak/mean %f", toaError, carrierIndex, slotNumber, peakOverMean);
+	  	Debug(DebugAll,"Excessive TOA error %d, peak/mean %f", toaError, peakOverMean);
+	  }
+	}
 
 	// Shift the received signal to compensate for TOA error.
 	// This shifts the signal so that the max power image is aligned to the expected position.
@@ -743,8 +745,11 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 	// This shifts the channel estimate to put the max power peak in the center, +/- 1/2 symbol period.
 	// The alignment error of heTrim is exactly the opposiate of the alignment error of xf2.
 	ComplexArray heTrim(11);
-	for (unsigned i=0; i<11; i++)
-		heTrim[i] = (*he)[maxIndex-5+i];
+	for (unsigned i=0; i<11; i++) {
+		int j = maxIndex - 5 + i;
+		if (j<0 || j>= (he->length())) continue;
+		heTrim[i] = (*he)[j];
+	}
 
 	String arfcnPrefix(arfcnIndex);
 	arfcnPrefix << ".";
