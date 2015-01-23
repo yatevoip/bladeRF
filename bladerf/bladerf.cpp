@@ -710,6 +710,19 @@ bool BrfIface::radioPowerOn()
 	doPowerOff(true,true);
 	return false;
     }
+    // Enable timestamps
+    // 0x10000: enable timestamps, clears and resets everything on write
+    uint32_t val = 0;
+    ::bladerf_config_gpio_read(m_dev,&val);
+    val |= 0x10000;
+    ::bladerf_config_gpio_write(m_dev,val);
+    val = 0;
+    ::bladerf_config_gpio_read(m_dev,&val);
+    if (!(val & 0x10000)) {
+	Debug(this,DebugWarn,"%sFailed to enable timestamps [%p]",prefix(),this);
+	doPowerOff(true,true);
+	return false;
+    }
     m_rxErrors.reset();
     m_txErrors.reset();
     m_rxIO.m_timestamp = initialReadTs();
@@ -754,18 +767,6 @@ bool BrfIface::open(const NamedList& params)
 	// Load FPGA
 	if (!loadFPGA(params,code,what,fpga))
 	    break;
-	// Enable timestamps
-	// 0x10000: enable timestamps, clears and resets everything on write
-	uint32_t val = 0;
-	::bladerf_config_gpio_read(m_dev,&val);
-	val |= 0x10000;
-	::bladerf_config_gpio_write(m_dev,val);
-	val = 0;
-	::bladerf_config_gpio_read(m_dev,&val);
-	if (!(val & 0x10000)) {
-	    code = 0;
-	    BRF_SET_OPER_BREAK("Failed to enable timestamps");
-	}
 	// Update device speed
 	bladerf_dev_speed speed = ::bladerf_device_speed(m_dev);
 	if (speed != BLADERF_DEVICE_SPEED_HIGH && speed != BLADERF_DEVICE_SPEED_SUPER) {
