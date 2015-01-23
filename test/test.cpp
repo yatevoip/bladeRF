@@ -32,63 +32,9 @@ TestIface::TestIface()
 {
 }
 
-void printComplexArray(const ComplexArray& array, unsigned int debugLevel, unsigned int numbersPerLine)
-{
-    unsigned int startPrinting = 1;
-    String tmpDump;
-    for (unsigned int i = 0; i < array.length();i++,startPrinting++) {
-	array[i].dump(tmpDump);
-	if (startPrinting != numbersPerLine) 
-	    continue;
-	Debug(debugLevel,"%s",tmpDump.c_str());
-	startPrinting = 0;
-	tmpDump = "";
-    }
-    Debug(debugLevel,"%s",tmpDump.c_str());
-}
-
 void TestIface::testTx(NamedList& params)
 {
-    String burstData = params.getValue(YSTRING("data"));
-    if (TelEngine::null(burstData))
-	return;
-    XDebug(DebugTest,"Starting txTest with oversample 8 and initial data : %s",burstData.c_str());
-    // First obtain the frequencyShift array
-
-    ComplexArray frequencyShift;
-    SignalProcessing::fillFrequencyShift(&frequencyShift,8);
-
-    XDebug(DebugAll,"Build frequency shift array for oversample 8 has %d elements :",frequencyShift.length());
-    printComplexArray(frequencyShift,DebugAll,8);
-
-    char inData[148];
-    for (int i = 0;i < 148;i++) {
-	inData[i] = burstData[i] - '0';
-    }
-
-    ComplexArray modulated(BITS_PER_TIMESLOT * 8);
-    unsigned int parseSize = 148 * 8;
-    if (parseSize > modulated.length())
-	parseSize = modulated.length();
-    for (unsigned int i = 0; i < parseSize; i++)
-	Complex::multiplyF(modulated[i],frequencyShift[i],inData[i / 8] ? 1.0 : -1.0);
-
-    XDebug(DebugInfo,"Modulated frequency shift array has %d elements :",modulated.length());
-    printComplexArray(modulated,DebugInfo,8);
-    
-    
-    ComplexArray laurentPulseAproximation;
-    SignalProcessing::fillLaurentPulseAproximation(&laurentPulseAproximation,8);
-
-    XDebug(DebugNote,"laurentPulseAproximation array has %d elements :",laurentPulseAproximation.length());
-    printComplexArray(laurentPulseAproximation,DebugNote,8);
-    
-
-    ComplexArray* convolution = SignalProcessing::getConvolution(modulated,laurentPulseAproximation);
-
-    XDebug(DebugMild,"Convolution array has %d elements :",convolution->length());
-    printComplexArray(*convolution,DebugMild,8);
-    
+    Debug(DebugStub,"TestIface::testTx() not implemented");
 }
 
 unsigned int s_energizer = 32767; // 2^15 - 1
@@ -102,7 +48,7 @@ short trimComplex(float cv)
     return (short)(cv * s_energizer);
 }
 
-bool TestIface::sendData(const ComplexArray& data)
+bool TestIface::sendData(const ComplexVector& data)
 {
     unsigned int outLength = data.length() * 2;
     short* out = new short[outLength];

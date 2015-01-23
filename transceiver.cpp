@@ -40,7 +40,7 @@
 #define DBGFUNC_TRXOBJ(func,obj) {}
 #endif
 
-#define FILLER_FRAMES 102
+#define FILLER_FRAMES_MIN 102
 
 // Dump data when entering in qmf() function
 //#define TRANSCEIVER_DUMP_QMF_IN
@@ -97,8 +97,6 @@ protected:
 
 ObjList TrxWorker::s_threads;
 Mutex TrxWorker::s_mutex(false,"TrxWorkers");
-String s_dummyBurstContent = "0000000001111101101110110000010100100111000001001000100000001111100011100010111000101110001010111010010100011001100111001111010011111000100101111101010000";
-static Mutex s_dumperChange(false,"TrxDumperChange");
 
 const TokenDict TrxWorker::s_name[] = {
     {"ARFCNData",     ARFCNData},
@@ -771,41 +769,33 @@ Transceiver::Transceiver(const char* name)
     m_startTime((uint32_t)Random::random()),
     m_clockUpdMutex(false,"TrxClockUpd"),
     m_txLatency(2),
-    m_fillers(0),
-    m_fillerMaxFrames(FILLER_FRAMES),
     m_tsc(0),
     m_rxFreq(0),
     m_txFreq(0),
     m_freqOffset(0),
     m_txPower(-10),
     m_txAttnOffset(0),
-    m_alterSend(0),
+    m_sendArfcnFS(0),
     m_txTestBurst(0),
     m_testMutex(false,"txTest"),
     m_dumpOneTx(false),
     m_dumpOneRx(false),
     m_error(false),
-    m_exiting(false),
-    m_dump(0)
+    m_exiting(false)
 {
     setTransceiver(*this,name);
     DDebug(this,DebugAll,"Transceiver() [%p]",this);
-    DataBlock data((void*)s_dummyBurstContent.c_str(),s_dummyBurstContent.length());
-    m_dummyTxBurst = GSMTxBurst::get(data, data.length());
-    m_dummyTxBurst->setDummy();
 }
 
 Transceiver::~Transceiver()
 {
     DDebug(this,DebugAll,"~Transceiver() [%p]",this);
     stop();
-    clearFillers();
     // NOTE: If you need to use m_arfcnCount use it before this line!
     // resetARFCNs will set it to 0.
     resetARFCNs();
     TelEngine::destruct(m_radio);
-    TelEngine::destruct(m_dummyTxBurst);
-    TelEngine::destruct(m_dump);
+    TelEngine::destruct(m_txTestBurst);
 }
 
 // Initialize the transceiver. This method should be called after construction
@@ -823,7 +813,6 @@ bool Transceiver::init(RadioIface* radio, const NamedList& params)
     }
     m_radio->setTransceiver(*this,"RADIO");
     m_radio->debugChain(this);
-    clearFillers();
     reInit(params);
     bool ok = false;
     while (true) {
@@ -832,27 +821,16 @@ bool Transceiver::init(RadioIface* radio, const NamedList& params)
 	unsigned int arfcns = getUInt(params,"arfcns");
 	m_arfcnConf = getUInt(params,"conf_arfcns");
 	const String* rAddr = params.getParam(YSTRING("remoteaddr"));
-	m_fillerMaxFrames = params.getIntValue(YSTRING("filler_frames"),m_fillerMaxFrames);
-	if (m_fillerMaxFrames < FILLER_FRAMES) {
-	    Debug(this,DebugConf,"filler_frames must be at least %d!",FILLER_FRAMES);
-	    m_fillerMaxFrames = FILLER_FRAMES;
-	}
-	unsigned int tableSize = arfcns * m_fillerMaxFrames * 8;
-	m_fillers = new GSMTxBurst*[tableSize];
-	unsigned int arfcn0Fillers = m_fillerMaxFrames * 8;
-	for (unsigned int i = 0; i < arfcn0Fillers; i++)
-	    m_fillers[i] = m_dummyTxBurst;
-	for (unsigned int i = arfcn0Fillers; i < tableSize; i++)
-	    m_fillers[i] = GSMTxBurst::getZeroBurst();
+	unsigned int nFillers = params.getIntValue(YSTRING("filler_frames"),
+	    FILLER_FRAMES_MIN,FILLER_FRAMES_MIN);
 	m_signalProcessing.initialize(m_oversamplingRate,arfcns);
-
 	int port = rAddr ? params.getIntValue(YSTRING("port")) : 0;
 	const char* lAddr = rAddr ? params.getValue(YSTRING("localaddr"),*rAddr) : 0;
 	if (rAddr &&
 	    !(m_clockIface.setAddr(true,lAddr,port,*this) &&
 	    m_clockIface.setAddr(false,*rAddr,port + 100,*this)))
 	    break;
-	if (!resetARFCNs(arfcns,port,rAddr,lAddr))
+	if (!resetARFCNs(arfcns,port,rAddr,lAddr,nFillers))
 	    break;
 	if (debugAt(DebugAll)) {
 	    String tmp;
@@ -1010,10 +988,9 @@ void Transceiver::runRadioSendData()
     waitPowerOn();
     m_radio->waitSendTx();
     m_radio->getRadioClock(m_txTime);
-    // Fill the bladerf buffers with filler data or dummy bursts
-    for (int i = 0;i< 12;i++) {
+    // Fill radio buffers with filler data or dummy bursts
+    for (int i = 0; i < 12; i++)
 	sendBurst(m_txTime);
-    }
     while (true) {
 	if (thShouldExit(this))
 	    break;
@@ -1032,120 +1009,60 @@ void Transceiver::runRadioSendData()
     }
 }
 
-void Transceiver::addFillerBurst(GSMTxBurst* burst)
-{
-    if (!burst)
-	return;
-    if (burst->arfcn() >= m_arfcnCount || burst->time().tn() > 8) {
-	Debug(this,DebugConf,
-	    "Invalid request for addFillerBurst conf arfcn %u, Burst: arfcn: %u tn: %u",
-	    m_arfcnCount,burst->arfcn(),burst->time().tn());
-	TelEngine::destruct(burst);
-	return;
-    }
-    unsigned int tmpFN = burst->time().fn() % m_fillerMaxFrames;
-    unsigned int pos = burst->arfcn() * m_fillerMaxFrames * 8 + tmpFN * 8 + burst->time().tn();
-    XDebug(this,DebugAll,"Adding filler burst to [%u] [%p], %p",
-	pos,m_fillers[pos], burst);
-    if (m_fillers[pos] && !m_fillers[pos]->isDummy())
-	TelEngine::destruct(m_fillers[pos]);
-    m_fillers[pos] = burst;
-}
-
-GSMTxBurst* Transceiver::getFiller(unsigned int arfcn, const GSMTime& time)
-{
-    if (arfcn >= m_arfcnCount || time.tn() > 7) {
-	Debug(this,DebugConf,
-	    "Invalid request for getFiller conf arfcn %u, Burst: arfcn: %u tn: %u",
-	    m_arfcnCount,arfcn,time.tn());
-	return 0;
-    }
-    unsigned int fn = time.fn() % m_fillerMaxFrames;
-    unsigned int pos = arfcn * m_fillerMaxFrames * 8 + fn * 8 + time.tn();
-    XDebug(this,DebugAll,"getFiller for %u returning [%p]",pos,m_fillers[pos]);
-    return m_fillers[pos];
-}
-
 bool Transceiver::sendBurst(GSMTime& time)
 {
-    XDebug(this,DebugAll,"Request send burst time fn:%u tn:%u",time.fn(),time.tn());
-    // Extract the expired bursts and add them to the filler table
+    XDebug(this,DebugAll,"sendBurst() fn=%u tn=%u [%p]",time.fn(),time.tn(),this);
+    // Build send data
+    bool first = true;
     for (unsigned int i = 0; i < m_arfcnCount; i++) {
-	ObjList expired; 
-	m_arfcn[i]->extractExpired(expired,time);
-	ObjList* o = expired.skipNull();
-	if (o && m_radio && !m_radio->loopback())
-	    Debug(this,DebugNote,"ARFCN %u: %d bursts expired! Time fn:%u tn:%u",
-		i,expired.count(),time.fn(),time.tn());
-	for (; o; o = o->skipNull()) {
-	    GSMTxBurst* burst = static_cast<GSMTxBurst*>(o->remove(false));
-	    addFillerBurst(burst);
-	}
-    }
-
-    unsigned int sendLength = (unsigned int)(BITS_PER_TIMESLOT * m_oversamplingRate);
-    if (m_oversamplingRate % 4 != 0)
-	sendLength ++;
-
-    ComplexArray toSend(sendLength);
-    bool addFiller = true;
-    for (unsigned int i = 0; i < m_arfcnCount; i++) {
-	GSMTxBurst* burst = m_arfcn[i]->getBurst(time);
+	ARFCN* a = m_arfcn[i];
+	a->moveBurstsToFillers(time,m_radio && !m_radio->loopback());
+	// Get the burst to send
+	bool addFiller = true;
+	GSMTxBurst* burst = a->getBurst(time);
 	if (!burst) {
-	    burst = getFiller(i,time);
+	    burst = a->m_fillerTable.get(time);
 	    addFiller = false;
 	}
-	if (!burst || (burst->isDummy() && i != 0))
+	if (!burst)
 	    continue;
-	const ComplexArray* transformed = burst->transform(m_signalProcessing);
-
-	if (m_txTestBurst && i == 0) {
+	if (!m_txTestBurst || a->arfcn() != 0)
+	    SignalProcessing::sum(m_sendBurstBuf,burst->txData(),first);
+	else {
 	    Lock myLock(m_testMutex);
-	    if (m_txTestBurst) {
-		transformed = m_txTestBurst->transform(m_signalProcessing);
-		addFiller = false;
+	    if (m_txTestBurst && !m_txTestBurst->txData().length() &&
+		!m_txTestBurst->buildTxData(a->arfcn(),m_signalProcessing).length())
+		TelEngine::destruct(m_txTestBurst);
+	    if (m_txTestBurst)
+		SignalProcessing::sum(m_sendBurstBuf,m_txTestBurst->txData(),first);
+	    else {
+		myLock.drop();
+		SignalProcessing::sum(m_sendBurstBuf,burst->txData(),first);
 	    }
 	}
-
-	if (!transformed) {
-	    Debug(this,DebugStub,"Unable to transform GSMTxBurst! Bug??");
-	    if (addFiller)
-		TelEngine::destruct(burst);
-	    continue;
-	}
-
-	toSend.sum(*transformed);
-
 	if (addFiller)
-	    addFillerBurst(burst);
+	    a->m_fillerTable.set(burst);
     }
-
+    // Reset TX buffer is nothing was set there
+    if (first)
+	m_sendBurstBuf.resize(m_signalProcessing.gsmSlotLen(),true);
 #ifdef XDEBUG
     String dump;
-    toSend.dump(dump);
-    Debug(this,DebugAll,"Send tx data : %s",dump.c_str());
+    m_sendBurstBuf.dump(dump,SigProcUtils::appendComplex);
+    Debug(this,DebugAll,"Sending len=%u at fn=%u tn=%u: %s",
+	m_sendBurstBuf.length(),time.fn(),time.tn(),dump.c_str());
 #endif
-    if (dumper())
-	dumper()->dumpTx(TrxDump::ArfcnTxFreqShifted,&toSend);
-    // Start TEST
-    if (m_alterSend) {
-	// Send only the complex sinusoids.
-	for (unsigned int i = 0;i < toSend.length();i++)
-	    toSend[i].set(0,0);
-
-	for (unsigned int i = 0; i < m_arfcnCount; i++) {
-	    if (((m_alterSend >> i) & 0x01) == 0)
-		continue;
-	    toSend.sum(*m_signalProcessing.getSinusoid(i));
-	}
-    } // End TEST
+    // Send frequency shifting vectors only?
+    if (m_sendArfcnFS)
+	m_signalProcessing.sumFreqShift(m_sendBurstBuf,m_sendArfcnFS);
     if (m_dumpOneTx) {
 	m_dumpOneTx = false;
 	String d;
-	toSend.dump(d);
-	printf("Tx Dump:\n %s\n",d.c_str());
+	m_sendBurstBuf.dump(d,SigProcUtils::appendComplex);
+	::printf("TX %u at fn=%u tn=%u:\r\n%s\r\n",
+	    m_sendBurstBuf.length(),time.fn(),time.tn(),d.c_str());
     }
-    return m_radio->sendData(toSend);
+    return m_radio->sendData(m_sendBurstBuf);
 }
 
 // Process a received radio burst
@@ -1277,8 +1194,6 @@ bool Transceiver::command(const char* str, String* rsp, unsigned int arfcn)
 	    str,arfcn,trxStateName(state()),status,
 	    reason.safe(lookup(status,s_cmdErrorName,"failure")),this);
     syncGSMTime();
-    if (!TelEngine::null(rspParam))
-	Debug(this,DebugNote,"CMD RSP %s",rspParam.c_str());
     return buildCmdRsp(rsp,cmd,status,rspParam);
 }
 
@@ -1349,16 +1264,6 @@ void Transceiver::destruct()
 {
     stop();
     GenObject::destruct();
-}
-
-// Set the data dumper of this transceiver if not already set
-void Transceiver::dumper(TrxDump* dump)
-{
-    Lock lck(s_dumperChange);
-    if (!m_dump)
-	m_dump = dump;
-    else
-	TelEngine::destruct(dump);
 }
 
 // Starting radio power on notification
@@ -1473,7 +1378,7 @@ static inline void clearARFCNs(ARFCN**& ptr, unsigned int& n)
 
 // Initialize the ARFCNs list (set or release)
 bool Transceiver::resetARFCNs(unsigned int arfcns, int port, const String* rAddr,
-    const char* lAddr)
+    const char* lAddr, unsigned int nFillers)
 {
     ARFCN** old = m_arfcn;
     if (m_arfcn) {
@@ -1495,6 +1400,16 @@ bool Transceiver::resetARFCNs(unsigned int arfcns, int port, const String* rAddr
 	m_arfcn[i]->m_arfcn = i;
 	m_arfcn[i]->setTransceiver(*this,"ARFCN[" + String(i) + "]");
 	m_arfcn[i]->debugChain(this);
+	GSMTxBurst* filler = 0;
+	if (m_arfcn[i]->arfcn() == 0) {
+	    filler = GSMTxBurst::buildFiller();
+	    if (filler) {
+		filler->buildTxData(m_arfcn[i]->arfcn(),m_signalProcessing);
+		if (!filler->txData().length())
+		    TelEngine::destruct(filler);
+	    }
+	}
+	m_arfcn[i]->m_fillerTable.init(nFillers,filler);
     }
     if (rAddr)
 	for (unsigned int i = 0; i < m_arfcnCount; i++) {
@@ -1517,18 +1432,6 @@ void Transceiver::stopARFCNs()
 {
     for (unsigned int i = 0; i < m_arfcnCount; i++)
 	m_arfcn[i]->stop();
-}
-
-// Clear filler table
-void Transceiver::clearFillers()
-{
-    if (!m_fillers)
-	return;
-    unsigned int len = m_arfcnCount * m_fillerMaxFrames * 8;
-    for (unsigned int i = 0; i < len; i++)
-	if (!m_fillers[i]->isDummy())
-	    TelEngine::destruct(m_fillers[i]);
-    delete[] m_fillers;
 }
 
 // Sync upper layer GSM clock (update time)
@@ -1729,7 +1632,8 @@ int Transceiver::handleCmdCustom(String& cmd, String* rspParam, String* reason)
 	else
 	    return CmdEUnkCmd;
 	return CmdEOk;
-    } else if (cmd.startSkip("dumprx ",false)) {
+    }
+    if (cmd.startSkip("dumprx ",false)) {
 	if (cmd == YSTRING("complex")) {
 	    m_dumpOneRx= true;
 	    return CmdEOk;
@@ -1742,56 +1646,55 @@ int Transceiver::handleCmdCustom(String& cmd, String* rspParam, String* reason)
 	    return CmdEUnkCmd;
 	ar->setPrintSocket();
 	return CmdEOk;
-    } else if (cmd.startSkip("freqout ",false)) { 
+    }
+    if (cmd.startSkip("freqout ",false)) { 
 	// Sends to output only the frequency shift vectors
 	// "mbts radio freqout 0,1,2,3" summes all ARFCN's frequency shift vectors
 	// and send them to output.
 	ObjList* split = cmd.split(',');
 	if (!split)
 	    return CmdEUnkCmd;
-	m_alterSend = 0;
-	for (ObjList* o = split->skipNull();o;o = o->skipNext()) {
+	m_sendArfcnFS = 0;
+	for (ObjList* o = split->skipNull(); o; o = o->skipNext()) {
 	    String* s = static_cast<String*>(o->get());
-	    int shift = s->toInteger(), tmp = 1;
-	    if (shift >= 0 && shift < 8)
-		m_alterSend |= (tmp << shift);
-		
+	    unsigned int shift = (unsigned int)s->toInteger(0,0,0);
+	    if (shift < 8)
+		m_sendArfcnFS |= (1 << shift);
 	}
 	TelEngine::destruct(split);
-	
 	return CmdEOk;
-    } else if (cmd.startSkip("freqout")) {
-	m_alterSend = 0;
+    }
+    if (cmd.startSkip("freqout")) {
+	m_sendArfcnFS = 0;
 	return CmdEOk;
-    } else if (cmd.startSkip("testtxburst ",false)) {
+    }
+    if (cmd.startSkip("testtxburst ",false)) {
 	int increment = 0;
 	if (cmd == YSTRING("10"))
 	    increment = 2;
 	if (cmd == YSTRING("11"))
 	    increment = 1;
-
-	DataBlock d(0,154);
+	DataBlock d(0,GSM_BURST_TXPACKET);
 	uint8_t* testData = (uint8_t*)d.data();
-
-	for (int i = 6;i < 154 && increment > 0;i += increment)
-	    testData [i] = 1;
-
+	for (int i = GSM_BURST_TXHEADER; i < GSM_BURST_LENGTH && increment > 0; i += increment)
+	    testData[i] = 1;
 	Lock myLock(m_testMutex);
 	TelEngine::destruct(m_txTestBurst);
-	m_txTestBurst = GSMTxBurst::get(d,154);
+	m_txTestBurst = GSMTxBurst::parse(d);
 	if (!m_txTestBurst)
-	    return CmdEUnkCmd;
+	    return CmdEFailure;
 	return CmdEOk;
-    } else if (cmd.startSkip("testtxburst")) {
-	
+    }
+    if (cmd.startSkip("testtxburst")) {
 	Lock myLock(m_testMutex);
 	TelEngine::destruct(m_txTestBurst);
-	m_txTestBurst = 0;
 	return CmdEOk;
-    } else if (cmd == YSTRING("dumponetx")) {
+    }
+    if (cmd == YSTRING("dumponetx")) {
 	m_dumpOneTx = true;
 	return CmdEOk;
-    } else if (cmd.startSkip("predefined ",false)) {
+    }
+    if (cmd.startSkip("predefined ",false)) {
 	int min = 0, max = 0, inc = 0;
 	int ret = ::sscanf(cmd.c_str(),"%d %d %d",&min,&max,&inc);
 	if (ret != 3 || min > max)
@@ -1800,21 +1703,23 @@ int Transceiver::handleCmdCustom(String& cmd, String* rspParam, String* reason)
 	    return CmdEInvalidState;
 	m_radio->setTestData(min,max,inc);
 	return CmdEOk;
-    } else if (cmd.startSkip("internal-loopback ",false)) {
+    }
+    if (cmd.startSkip("internal-loopback ",false)) {
 	if (!m_radio)
 	    return CmdEInvalidState;
 	m_radio->setLoopback(true,cmd.toInteger());
 	return CmdEOk;
-    } else if (cmd.startSkip("internal-loopback",false)) {
+    }
+    if (cmd.startSkip("internal-loopback",false)) {
 	if (!m_radio)
 	    return CmdEInvalidState;
 	m_radio->setLoopback(false);
 	return CmdEOk;
-    } else if (cmd.startSkip("dump-freq-shift ",false)) {
+    }
+    if (cmd.startSkip("dump-freq-shift ",false)) {
 	dumpFreqShift(cmd.toInteger());
 	return CmdEOk;
     }
-    
     if (m_radio)
 	return m_radio->command(cmd,rspParam,reason);
     return CmdEUnkCmd;
@@ -2363,6 +2268,35 @@ void TransceiverQMF::initAccessBurstSync()
 
 
 //
+// TxFillerTable
+//
+// Initialize the filler table
+void TxFillerTable::init(unsigned int len, GSMTxBurst* filler)
+{
+    clear();
+    m_filler = filler;
+    m_fillers.assign(len >= FILLER_FRAMES_MIN ? len : FILLER_FRAMES_MIN);
+    for (unsigned int i = 0; i < m_fillers.length(); i++) {
+	GSMTxBurstPtrVector& v = m_fillers[i];
+	v.assign(8);
+	v.fill(m_filler);
+    }
+}
+
+void TxFillerTable::clear()
+{
+    for (unsigned int i = 0; i < m_fillers.length(); i++) {
+	GSMTxBurstPtrVector& v = m_fillers[i];
+	for (unsigned int j = 0; j < v.length(); j++)
+	    if (v[j] != m_filler)
+		TelEngine::destruct(v[j]);
+    }
+    m_fillers.clear();
+    TelEngine::destruct(m_filler);
+}
+
+
+//
 // ARFCN
 //
 ARFCN::ARFCN()
@@ -2394,6 +2328,30 @@ void ARFCN::dumpChanType(String& buf, const char* sep)
 	const char* s = chanType(m_slots[i].type);
 	buf.append(s ? s : String(m_slots[i].type).c_str(),sep);
     }
+}
+
+// Extract expired bursts from this ARFCN's queue.
+// Move them to filler table
+void ARFCN::moveBurstsToFillers(const GSMTime& time, bool warnExpired)
+{
+    unsigned int expired = 0;
+    Lock lck(m_txMutex);
+    for (ObjList* o = m_expired.skipNull(); o; o = o->skipNull()) {
+	GSMTxBurst* b = static_cast<GSMTxBurst*>(o->get());
+	if (!b->filler())
+	    expired++;
+	m_fillerTable.set(static_cast<GSMTxBurst*>(o->remove(false)));
+    }
+    for (ObjList* o = m_txQueue.skipNull(); o; o = o->skipNull()) {
+	GSMTxBurst* b = static_cast<GSMTxBurst*>(o->get());
+	if (b->time() >= time)
+	    break;
+	m_fillerTable.set(static_cast<GSMTxBurst*>(o->remove(false)));
+	expired++;
+    }
+    if (expired && warnExpired)
+	Debug(this,DebugNote,"%s%u burst(s) expired at fn=%u tn=%u [%p]",
+	    prefix(),expired,time.fn(),time.tn(),this);
 }
 
 // Initialize a timeslot and related data
@@ -2498,11 +2456,12 @@ void ARFCN::addBurst(GSMTxBurst* burst)
     transceiver()->getTxTime(txTime);
     Lock myLock(m_txMutex);
 
-    if (burst->isFiller() || txTime > burst->time()) {
-	if (!burst->isFiller()) {
+    if (burst->filler() || txTime > burst->time()) {
+	if (!burst->filler()) {
 	    Debug(this,DebugNote,
-		"%sReceived delayed burst arfcn:%u burst fn %u tn %u, TxTime fn:%u tn:%u",
-		prefix(),m_arfcn,burst->time().fn(),burst->time().tn(),txTime.fn(),txTime.tn());
+		"%sReceived delayed burst fn=%u tn=%u current: fn=%u tn=%u [%p]",
+		prefix(),burst->time().fn(),burst->time().tn(),
+		txTime.fn(),txTime.tn(),this);
 	}
 	m_expired.insert(burst);
 	return;
@@ -2510,10 +2469,14 @@ void ARFCN::addBurst(GSMTxBurst* burst)
     GSMTime tmpTime = txTime;
     tmpTime.advance(153,0);
     if (burst->time() > tmpTime) {
-	uint32_t f;
-	uint8_t n;
-	GSMTime::diff(f,n,burst->time().fn(),burst->time().tn(),txTime.fn(),txTime.tn());
-	Debug(this,DebugNote,"Received burst to far in feature! %d :  %d",f,n);
+	if (debugAt(DebugNote)) {
+	    uint32_t f;
+	    uint8_t n;
+	    GSMTime::diff(f,n,burst->time().fn(),burst->time().tn(),
+		txTime.fn(),txTime.tn());
+	    Debug(this,DebugNote,"%sReceived burst too far in future diff: fn=%u tn=%u [%p]",
+		prefix(),f,n,this);
+	}
 	m_expired.insert(burst);
 	return;
     }
@@ -2524,13 +2487,13 @@ void ARFCN::addBurst(GSMTxBurst* burst)
 	int comp = GSMTime::compare(b->time(),burst->time());
 	
 	if (comp > 0) {
-	    XDebug(this,DebugAll,"%sInsert burst FN=%u TN=%u [%p]",
+	    XDebug(this,DebugAll,"%sInsert burst fn=%u tn=%u [%p]",
 		prefix(),burst->time().fn(),burst->time().tn(),this);
 	    o->insert(burst);
 	    return;
 	}
 	if (comp == 0) {
-	    Debug(this,DebugAll,"%sDuplicate burst received FN=%u TN=%u [%p]",
+	    Debug(this,DebugAll,"%sDuplicate burst received fn=%u tn=%u [%p]",
 		prefix(),b->time().fn(),b->time().tn(),this);
 	    TelEngine::destruct(burst);
 	    return;
@@ -2540,29 +2503,13 @@ void ARFCN::addBurst(GSMTxBurst* burst)
     last->append(burst);
 }
 
-void ARFCN::extractExpired(ObjList& dest, const GSMTime& time)
-{
-    Lock myLock(m_txMutex);
-    for (ObjList* o = m_expired.skipNull();o;o = o->skipNull())
-	dest.append(o->remove(false));
-
-    for (ObjList* o = m_txQueue.skipNull();o;o = o->skipNull()) {
-	GSMTxBurst* b = static_cast<GSMTxBurst*>(o->get());
-	if (GSMTime::compare(b->time(),time) >= 0)
-	    return;
-	o->remove(false);
-	dest.append(b);
-    }
-}
-
 GSMTxBurst* ARFCN::getBurst(const GSMTime& time)
 {
     Lock myLock(m_txMutex);
-    for (ObjList* o = m_txQueue.skipNull();o;o = o->skipNext()) {
+    for (ObjList* o = m_txQueue.skipNull(); o; o = o->skipNext()) {
 	GSMTxBurst* b = static_cast<GSMTxBurst*>(o->get());
-	int comp = GSMTime::compare(b->time(),time);
-	if (comp > 0)
-	    return 0;
+	if (b->time() > time)
+	    continue;
 	o->remove(false);
 	return b;
     }
@@ -2823,21 +2770,24 @@ bool ARFCNSocket::recvBurst(GSMRxBurst*& burst)
 // Read socket loop
 void ARFCNSocket::runReadDataSocket()
 {
-    if (transceiver())
-	transceiver()->waitPowerOn();
+    if (!transceiver())
+	return;
+    transceiver()->waitPowerOn();
+    FloatVector tmpV;
+    ComplexVector tmpW;
     while (!thShouldExit(transceiver())) {
 	int r = m_data.readSocket(*this);
 	if (r < 0)
 	    return;
 	if (!r)
 	    continue;
-	GSMTxBurst* burst = GSMTxBurst::get(m_data.m_readBuffer,r);
+	DataBlock tmp;
+	GSMTxBurst* burst = GSMTxBurst::parse(m_data.m_readBuffer.data(0),r,&tmp);
 	if (!burst)
 	    continue;
-	if (!burst)
-	    continue;
-	burst->arfcn(arfcn());
-	burst->transform(transceiver()->signalProcessing());
+	// Transform (modulate + freq shift)
+	burst->buildTxData(arfcn(),transceiver()->signalProcessing(),&tmpV,&tmpW,tmp);
+	tmp.clear(false);
 	addBurst(burst);
     }
 }
@@ -3114,7 +3064,7 @@ static inline float energize(float cv, float div = 1)
 }
 
 // Send data to radio
-bool RadioIface::sendData(const ComplexArray& data)
+bool RadioIface::sendData(const ComplexVector& data)
 {
     // Special case for loopback
     if (m_loopback) {
@@ -3233,69 +3183,6 @@ int RadioIface::command(const String& cmd, String* rspParam, String* reason)
     if (!cmd)
 	return Transceiver::CmdEOk;
     return Transceiver::CmdEUnkCmd;
-}
-
-
-//
-// TrxDump
-//
-static const TokenDict s_dumpLocLabel[] = {
-    {"trx_config", TrxDump::TrxConfig},
-    {"tx_burst", TrxDump::ArfcnTxBurst},
-    {"frequency_shifting", TrxDump::ArfcnTxFreqShifted},
-    {0,0},
-};
-
-static String& dumpAppendFloat(String& dest, const float& val, const char* sep)
-{
-    char s[80];
-    sprintf(s,"%g",val);
-    return dest.append(s,sep);
-}
-
-static String& dumpAppendComplex(String& dest, const Complex& val, const char* sep)
-{
-    char s[170];
-    sprintf(s,"%g%+gi",val.real(),val.imag());
-    return dest.append(s,sep);
-}
-
-TrxDump::TrxDump(uint32_t loc,
-    String& (*funcDumpFloat)(String& dest, const float& item, const char* sep),
-    String& (*funcDumpComplex)(String& dest, const Complex& item, const char* sep))
-    : m_location(loc ? loc : 0xffffffff),
-    m_mutex(true,"TrxDump"),
-    m_locLabel(s_dumpLocLabel),
-    m_funcDumpFloat(funcDumpFloat ? funcDumpFloat : dumpAppendFloat),
-    m_funcDumpComplex(funcDumpComplex ? funcDumpComplex : dumpAppendComplex)
-{
-}
-
-// Dump TX data
-void TrxDump::dumpTx(uint32_t loc, const void* data, ARFCN* arfcn)
-{
-    String prefix = locLabel(loc);
-    const ComplexVector* cVect = 0;
-    switch (loc) {
-	case ArfcnTxFreqShifted:
-	    if (!data)
-		return;
-	    cVect = (const ComplexVector*)data;
-	    break;
-	default:
-	    Debug(DebugStub,"TrxDump::dump() not implemented for %u (%s)",
-		loc,prefix.c_str());
-	    return;
-    }
-    String tmp;
-    if (cVect)
-	cVect->dump(tmp,m_funcDumpComplex);
-    if (arfcn)
-	prefix << " arfcn=" << arfcn->arfcn();
-    String data;
-    if (tmp)
-	data << ": " << tmp;
-    ::printf("%s%s",prefix.c_str(),data.safe());
 }
 
 /* vi: set ts=8 sw=4 sts=4 noet: */

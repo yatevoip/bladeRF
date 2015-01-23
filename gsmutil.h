@@ -39,6 +39,9 @@ class GSMRxBurst;                        // A received GSM burst
 
 // Burst length in symbols
 #define GSM_BURST_LENGTH 148
+// TX burst lengths
+#define GSM_BURST_TXHEADER 6
+#define GSM_BURST_TXPACKET (GSM_BURST_TXHEADER + GSM_BURST_LENGTH)
 
 // The number of GSM TSC (Training Sequence Code) Normal Burst
 #define GSM_NB_TSC_LEN 26
@@ -212,6 +215,14 @@ public:
 	{ return compare(fn(),tn(),other.fn(),other.tn()) > 0; }
 
     /**
+     * Greater then or equal to comparison operator
+     * @param other Object to compare with
+     * @return True if this time is less then given time
+     */
+    inline bool operator>=(const GSMTime& other) const
+	{ return compare(fn(),tn(),other.fn(),other.tn()) >= 0; }
+
+    /**
      * Equality operator
      * @param other Object to compare with
      * @return True if this time is equal with given time
@@ -381,81 +392,70 @@ class GSMTxBurst : public GSMBurst
     YNOCOPY(GSMTxBurst);
 public:
     /**
-     * Destructor
+     * Constructor
      */
-    virtual ~GSMTxBurst();
+    inline GSMTxBurst()
+	: m_powerLevel(0), m_filler(false)
+	{}
 
     /**
-     * Helper method to set ARFCN number
+     * Check if this burst is a filler one
+     * @return True if this burst is a filler
      */
-    inline void arfcn(unsigned int arfcnNr)
-	{ m_arfcnNumber = arfcnNr;}
+    inline bool filler() const
+	{ return m_filler; }
 
     /**
-     * Helper method to obtain ARFCN number
+     * Retrieve the TX data
+     * @return TX data
      */
-    inline unsigned int arfcn() const
-	{ return m_arfcnNumber; }
+    inline const ComplexVector& txData() const
+	{ return m_txData; }
+
+    /**
+     * Build TX data if not already done
+     * @param arfcn The ARFCN requesting it
+     * @param proc The signal processor
+     * @param tmpV Optional temporary buffer to be passed to signal processing
+     * @param tmpW Optional temporary buffer to be passed to signal processing
+     * @param buf Optional buffer to parse, use this burst if empty
+     * @return TX data
+     */
+    const ComplexVector& buildTxData(unsigned int arfcn, const SignalProcessing& proc,
+	FloatVector* tmpV = 0, ComplexVector* tmpW = 0,
+	const DataBlock& buf = DataBlock::empty());
+
+    /**
+     * Obtain a burst from the given data.
+     * Copy burst data (excluding the header) in DataBlock if dataBits is 0
+     * @param buf The data to parse
+     * @param len The data length
+     * @param dataBits Optional destination for burst data bits.
+     *  If set it will be filled with burst data (bits) without owning the buffer.
+     *  The caller is responsable of calling DataBlock::clear(false) on it
+     * @return A new burst if the data is valid
+     */
+    static GSMTxBurst* parse(const uint8_t* buf, unsigned int len,
+	DataBlock* dataBits = 0);
 
     /**
      * Obtain a burst from the given data
-     * @param data The data read from the socket.
-     * @param length The data length read from the socket
-     * @return A new burst if the data is valid.
+     * @param data The data to parse
+     * @return A new burst if the data is valid
      */
-    static GSMTxBurst* get(const DataBlock& data, unsigned int length);
+    static inline GSMTxBurst* parse(const DataBlock& data)
+	{ return parse(data.data(0),data.length()); }
 
     /**
-     * Transform the received bit data into a complex array
-     * @param sigproc Reference to the Signal Processing instance that holds the
-     *  precalculated data.
-     * @return The transformed complex array or 0 on error.
-     * Note: The returned complex array is owned by the Burst!
+     * Build a filler burst
+     * @return A new burst with valid data
      */
-    const ComplexArray* transform(const SignalProcessing& sigproc);
-
-    /**
-     * Helper method to verify if this burst is a filler one
-     * @return True if this burst is a filler.
-     */
-    inline bool isFiller() const
-	{ return m_isFillerBurst; }
-
-    /**
-     * Mark this burst as beeing a dummy one
-     */
-    inline void setDummy()
-	{ m_isDummy = true; }
-
-    /**
-     * Check if this burst is a dummy one
-     * @return True if this burst is a dummy one
-     */
-    inline bool isDummy() const
-	{ return m_isDummy; }
-
-    /**
-     * Get 'zero' burst. A burst that after all transformatons the output values are 0
-     * @return A pointer to a 'zero burst'. NOTE The caller does not own the pointer
-     */
-    static GSMTxBurst* getZeroBurst();
-
-    static GSMTxBurst s_zeroBurst;
+    static GSMTxBurst* buildFiller();
 
 private:
-    /**
-     * Constructor
-     */
-    GSMTxBurst()
-	: m_transformed(0), m_arfcnNumber(0), m_powerLevel(0), m_isFillerBurst(false),
-	m_isDummy(false)
-	{}
-
-    ComplexArray* m_transformed;
-    unsigned int m_arfcnNumber;
+    ComplexVector m_txData;
     float m_powerLevel;
-    bool m_isFillerBurst;
-    bool m_isDummy;
+    bool m_filler;                       // Filler burst
 };
 
 

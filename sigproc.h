@@ -29,13 +29,12 @@ namespace TelEngine {
 
 class SigProcUtils;                      // Utility functions
 class Complex;                           // A Complex (float) number
-template <class Obj,bool> class SigProcVector;// Basic vector template
-class ComplexArray;                      // A Complex array
+class SignalProcessing;                  // Signal processing
 
-#define GSM_SYMBOL_RATE 13e6/48 // 13 * 10^6 / 48
+#define GSM_SYMBOL_RATE (13e6 / 48) // 13 * 10^6 / 48
 #define BITS_PER_TIMESLOT 156.25
 #define PI M_PI
-//#define DUMP_COMPLEX
+#define PI2 (2.0 * PI)
 
 /**
  * Processing library utility functions, not related to signal processing
@@ -44,6 +43,25 @@ class ComplexArray;                      // A Complex array
 class SigProcUtils
 {
 public:
+    /**
+     * Calculate minimum value
+     * @param v1 First value
+     * @param v2 Second value
+     * @return v1 or v2
+     */
+    static inline unsigned int min(unsigned int v1, unsigned int v2)
+	{ return (v1 <= v2) ? v1 : v2; }
+
+    /**
+     * Calculate minimum value
+     * @param v1 First value
+     * @param v2 Second value
+     * @param v3 Third value
+     * @return v1 or v2 or v3
+     */
+    static inline unsigned int min(unsigned int v1, unsigned int v2, unsigned int v3)
+	{ return min(v1,min(v2,v3)); }
+
     /**
      * Copy memory
      * @param dest Destination buffer
@@ -84,6 +102,24 @@ public:
     static String& appendSplit(String& buf, const String& str, unsigned int lineLen,
 	unsigned int offset = 0, const char* linePrefix = 0,
 	const char* suffix = "\r\n");
+	
+    /**
+     * Append float value to a String (using "%g" format)
+     * @param dest Destination String
+     * @param val Value to append
+     * @param sep Separator to use
+     * @return Destination String address
+     */
+    static String& appendFloat(String& dest, const float& val, const char* sep);
+
+    /**
+     * Append a Complex number to a String (using "%g%+gi" format)
+     * @param dest Destination String
+     * @param val Value to append
+     * @param sep Separator to use
+     * @return Destination String address
+     */
+    static String& appendComplex(String& dest, const Complex& val, const char* sep);
 };
 
 
@@ -225,6 +261,14 @@ public:
 	    return dest;
 	}
 
+    /**
+     * Multiply two complex numbers
+     * Multiply c1 and c2 and put the result in dest.
+     * @param dest Destination
+     * @param c1 First number
+     * @param c2 Second number
+     * @return Destination number address
+     */
     static inline Complex& multiply(Complex& dest, const Complex& c1,
 	const Complex& c2) {
 	    dest.set(c1.real() * c2.real() - c1.imag() * c2.imag(),
@@ -232,6 +276,14 @@ public:
 	    return dest;
 	}
 
+    /**
+     * Multiply a complex numbers with a float
+     * Multiply c1 and real and put the result in dest
+     * @param dest Destination
+     * @param c Complex number
+     * @param real Float number
+     * @return Destination number address
+     */
     static inline Complex& multiplyF(Complex& dest, const Complex& c, float real) {
 	    dest.set(c.real() * real,c.imag() * real);
 	    return dest;
@@ -248,8 +300,12 @@ public:
      * @param c2 Second array
      * @param len2 Second array length
      */
-    static void multiply(Complex* dest, unsigned int len,
-	const Complex* c1, unsigned int len1, const Complex* c2, unsigned int len2);
+    static inline void multiply(Complex* dest, unsigned int len,
+	const Complex* c1, unsigned int len1, const Complex* c2, unsigned int len2) {
+	    unsigned int n = SigProcUtils::min(len,len1,len2);
+	    for (; n; --n, ++dest, ++c1, ++c2)
+		multiply(*dest,*c1,*c2);
+	}
 
     /**
      * Multiply two complex arrays.
@@ -270,6 +326,7 @@ public:
      * @param dest Destination number
      * @param c1 First number
      * @param c2 Second number
+     * @return Destination number address
      */
     static inline Complex& sum(Complex& dest, const Complex& c1, const Complex& c2) {
 	    dest.set(c1.real() + c2.real(),c1.imag() + c2.imag());
@@ -287,8 +344,12 @@ public:
      * @param c2 Second array
      * @param len2 Second array length
      */
-    static void sum(Complex* dest, unsigned int len,
-	const Complex* c1, unsigned int len1, const Complex* c2, unsigned int len2);
+    static inline void sum(Complex* dest, unsigned int len,
+	const Complex* c1, unsigned int len1, const Complex* c2, unsigned int len2) {
+	    unsigned int n = SigProcUtils::min(len,len1,len2);
+	    for (; n; --n, ++dest, ++c1, ++c2)
+		sum(*dest,*c1,*c2);
+	}
 
     /**
      * Compute the sum of two complex arrays.
@@ -318,10 +379,12 @@ public:
      * @param dest Destination number
      * @param c1 First number
      * @param c2 Second number
+     * @return Destination number address
      */
-    static inline void sumMul(Complex& dest, const Complex& c1, const Complex& c2) {
+    static inline Complex& sumMul(Complex& dest, const Complex& c1, const Complex& c2) {
 	    dest.set(dest.real() + (c1.real() * c2.real() - c1.imag() * c2.imag()),
 		dest.imag() + (c1.real() * c2.imag() + c1.imag() * c2.real()));
+	    return dest;
 	}
 
     /**
@@ -332,9 +395,31 @@ public:
      * @param len1 First array length
      * @param c2 Second array
      * @param len2 Second array length
+     * @return Destination number address
      */
-    static void sumMul(Complex& dest, const Complex* c1, unsigned int len1,
-	const Complex* c2, unsigned int len2);
+    static inline Complex& sumMul(Complex& dest, const Complex* c1, unsigned int len1,
+	const Complex* c2, unsigned int len2){
+	    for (unsigned int n = SigProcUtils::min(len1,len2); n; --n, ++c1, ++c2)
+		sumMul(dest,*c1,*c2);
+	    return dest;
+	}
+
+    /**
+     * Compute the sum of dest and product of c1,c2
+     * E.g. dest[i] = dest[i] + (c1[i] * c2[i])
+     * @param dest Destination array
+     * @param len Destination array length
+     * @param c1 Pointer to first array
+     * @param len1 First array length
+     * @param c2 Second array
+     * @param len2 Second array length
+     */
+    static inline void sumMul(Complex* dest, unsigned int len,
+	const Complex* c1, unsigned int len1, const Complex* c2, unsigned int len2) {
+	    unsigned int n = SigProcUtils::min(len,len1,len2);
+	    for (; n; --n, ++dest, ++c1, ++c2)
+		sumMul(*dest,*c1,*c2);
+	}
 
     /**
      * Multiply c1 by f. Add the result to c
@@ -350,6 +435,7 @@ public:
      * @param dest Destination number
      * @param c1 First number
      * @param c2 Second number
+     * @return Destination number address
      */
     static inline Complex& diff(Complex& dest, const Complex& c1, const Complex& c2) {
 	    dest.set(c1.real() - c2.real(),c1.imag() - c2.imag());
@@ -366,8 +452,12 @@ public:
      * @param c2 Second array
      * @param len2 Second array length
      */
-    static void diff(Complex* dest, unsigned int len,
-	const Complex* c1, unsigned int len1, const Complex* c2, unsigned int len2);
+    static inline void diff(Complex* dest, unsigned int len,
+	const Complex* c1, unsigned int len1, const Complex* c2, unsigned int len2) {
+	    unsigned int n = SigProcUtils::min(len,len1,len2);
+	    for (; n; --n, ++dest, ++c1, ++c2)
+		diff(*dest,*c1,*c2);
+	}
 
     /**
      * Compute the difference of two complex arrays.
@@ -386,7 +476,11 @@ public:
      * @param c Pointer to data
      * @param len Data length
      */
-    static void conj(Complex* c, unsigned int len);
+    static inline void conj(Complex* c, unsigned int len) {
+	    if (c)
+		for (; len; --len, ++c)
+		    c->imag(-c->imag());
+	}
 
     /**
      * Set complex elements from 16 bit integers array (pairs of real/imaginary parts)
@@ -420,9 +514,11 @@ private:
  * NOTE: This template won't work for objects holding pointers,
  *  it copies data using raw memory copy
  * @short Basic vector template
- * @param basicType True for basic types (i.e. float, int ...), false for struct/class objects
+ * @param basicType True for basic types (i.e. float, int ...),
+ *  false for struct/class objects. Basic type vectors will be reset when allocated
+ * @param hardArrayOps Use hard copy/reset if true. Use loops to assign data if false
  */
-template <class Obj, bool basicType> class SigProcVector
+template <class Obj, bool basicType = true, bool hardArrayOps = true> class SigProcVector
 {
 public:
     /**
@@ -447,16 +543,14 @@ public:
      * @param len Optional vector length, 0 to use source buffer length
      */
     inline SigProcVector(const Obj* ptr, unsigned int n, unsigned int len = 0)
-	: m_data(0), m_length(0) {
-	    assign(len ? len : n);
-	    copy(ptr,n);
-	}
+	: m_data(0), m_length(0)
+	{ assign(len ? len : n,ptr,n); }
 
     /**
-     * Constructor from another array
-     * @param other Array to copy
+     * Constructor from another vector
+     * @param other Vector to assign
      */
-    inline SigProcVector(const SigProcVector<Obj,basicType>& other)
+    inline SigProcVector(const SigProcVector& other)
 	: m_data(0), m_length(0)
 	{ *this = other; }
 
@@ -467,35 +561,36 @@ public:
 	{ clear(); }
 
     /**
-     * Retrieve array data pointer
-     * @return Array data pointer, 0 if empty (not allocated)
+     * Retrieve vector data pointer
+     * @return Vector data pointer, 0 if empty (not allocated)
      */
     inline Obj* data()
 	{ return m_data; }
 
     /**
-     * Retrieve array data pointer
-     * @return A const pointer to array data, 0 if empty (not allocated)
+     * Retrieve vector data pointer
+     * @return A const pointer to vector data, 0 if empty (not allocated)
      */
     inline const Obj* data() const
 	{ return m_data; }
 
     /**
-     * Retrieve array length
-     * @return Array length
+     * Retrieve vector length
+     * @return Vector length
      */
     inline unsigned int length() const
 	{ return m_length; }
 
     /**
-     * Retrieve array size in bytes (length() * sizeof(Obj))
-     * @return Array size in bytes
+     * Retrieve vector size in bytes (length() * sizeof(Obj))
+     * @return Vector size in bytes
      */
     inline unsigned int size() const
 	{ return length() * sizeof(Obj); }
 
     /**
-     * Clear the array
+     * Clear the vector
+     * @param del Release data
      */
     inline void clear(bool del = true) {
 	    if (!m_data)
@@ -507,50 +602,122 @@ public:
 	}
 
     /**
-     * Resize (re-alloc or free) this array if required size is not the same
+     * Resize (re-alloc or free) this vector if required size is not the same
      *  as the current one
-     * @param len Required array length
+     * @param len Required vector length
+     * @param rst Set it to true to reset vector contents
      */
-    inline void resize(unsigned int len) {
-	    if (len != length())
-		assign(len);
-	}
-
-    /**
-     * Allocate space for array
-     * @param len Array length
-     */
-    void assign(unsigned int len) {
-	    clear();
-	    if (!len)
-		return;
-	    m_data = new Obj[len];
-	    if (m_data) {
-		m_length = len;
-		if (basicType)
-		    SigProcUtils::bzero(m_data,m_length,sizeof(Obj));
+    inline void resize(unsigned int len, bool rst = false) {
+	    if (!rst) {
+		if (len != length())
+		    assign(len);
 	    }
+	    else if (len != length())
+		assign(len,0,0,true);
 	    else
-		Debug("SigProcVector",DebugFail,
-		    "Failed to allocate len=%u obj_size=%u [%p]",
-		    len,(unsigned int)(sizeof(Obj)),this);
+		reset();
 	}
 
     /**
-     * Copy elements from another array
+     * Allocate space for vector. Copy data into it
+     * @param ptr Buffer to copy
+     * @param len The number of elements to copy
+     */
+    inline void assign(const Obj* ptr, unsigned int len)
+	{ assign(len,ptr,len); }
+
+    /**
+     * Assign a slice of this vector
+     * @param offs The offset to start
+     * @param nCopy The number of elements to copy, 0 to assign the remaining elements
+     */
+    inline void assignSlice(unsigned int offs, unsigned int nCopy = 0) {
+	    if (!data())
+		return;
+	    if (offs >= length()) {
+		clear();
+		return;
+	    }
+	    nCopy = SigProcUtils::min(length() - offs,nCopy ? nCopy : length());
+	    if (nCopy != length())
+		assign(nCopy,data() + offs,nCopy);
+	}
+
+    /**
+     * Allocate space for vector
+     * Reset memory if 'basicType' template parameter is true
+     * @param len Vector length
+     * @param ptr Optional pointer to buffer to copy
+     * @param nCopy The number of elements to copy from 'ptr'
+     * @param rst True to reset vector contents
+     *  (ignored if not basic type: non basic type must have a default constructor anyway)
+     */
+    void assign(unsigned int len, const Obj* ptr = 0, unsigned int nCopy = 0,
+	bool rst = true) {
+	    Obj* tmp = len ? new Obj[len] : 0;
+	    if (!tmp) {
+		if (len)
+		    Debug("SigProcVector",DebugFail,
+			"Failed to allocate len=%u obj_size=%u [%p]",
+			len,(unsigned int)(sizeof(Obj)),this);
+		clear();
+		return;
+	    }
+	    if (!(ptr && nCopy)) {
+		if (basicType && rst)
+		    reset(tmp,len);
+	    }
+	    else {
+		unsigned int n = copy(tmp,len,ptr,nCopy);
+		if (n < len && basicType && rst)
+		    reset(tmp + n,len - n);
+	    }
+	    clear();
+	    m_data = tmp;
+	    m_length = len;
+	}
+
+    /**
+     * Copy elements from another vector
      * @param ptr Pointer to data to copy
      * @param n The number of bytes to copy
-     * @param offs Optional offset in our array
+     * @param offs Optional offset in our vector
      * @return The number of elements copied
      */
-    virtual unsigned int copy(const Obj* ptr, unsigned int n, unsigned int offs = 0)
-	{ return SigProcUtils::copy(m_data,m_length,ptr,n,sizeof(Obj),offs); }
+    inline unsigned int copy(const Obj* ptr, unsigned int n, unsigned int offs = 0)
+	{ return copy(data(),length(),ptr,n,offs); }
 
     /**
-     * Take another array's data
-     * @param other Array to steal data from
+     * Copy elements from another vector
+     * @param other Vector to copy
+     * @param offs Optional offset in our vector
+     * @return The number of elements copied
      */
-    inline void steal(SigProcVector<Obj,basicType>& other) {
+    inline unsigned int copy(const SigProcVector& other, unsigned int offs = 0)
+	{ return copy(other.data(),other.length(),offs); }
+
+    /**
+     * Reset the vector
+     * @param offs Optional offset in vector
+     * @return The number of elements reset
+     */
+    inline unsigned int reset(unsigned int offs = 0)
+	{ return reset(data(),length(),offs); }
+
+    /**
+     * Fill this vector
+     * @param value Value to fill with
+     * @param offs Optional offset in vector
+     * @return The number of elements set
+     */
+    inline unsigned int fill(const Obj& value, unsigned int offs = 0)
+	{ return fill(data(),length(),value,offs); }
+
+    /**
+     * Take another vector's data
+     * @param other Vector to steal data from
+     */
+    inline void steal(SigProcVector& other) {
 	    clear();
 	    m_data = other.data();
 	    m_length = other.length();
@@ -558,7 +725,7 @@ public:
 	}
 
     /**
-     * Array indexing operator
+     * Vector indexing operator
      * @param index Index to retrieve
      * @return The address of the object at the given index
      */
@@ -566,7 +733,7 @@ public:
 	{ return m_data[index]; }
 
     /**
-     * Array indexing operator
+     * Vector indexing operator
      * @param index Index yo retrieve
      * @return Const address of the object at the given index
      */
@@ -575,36 +742,54 @@ public:
 
     /**
      * Assignment operator
-     * @param other Array to set from
-     * @return This array's address
+     * @param other Vector to set from
+     * @return This vector's address
      */
-    inline SigProcVector<Obj,basicType>& operator=(const SigProcVector<Obj,basicType>& other) {
-	    assign(other.length());
-	    copy(other.data(),other.length());
+    inline SigProcVector& operator=(const SigProcVector& other) {
+	    assign(other.data(),other.length());
 	    return *this;
 	}
 
     /**
-     * Dump this array to a string
-     * @param buf Destination string
-     * @param func Pointer to function who appends the object to a String
-     * @param sep Array elements separator
-     * @return Destination string address
+     * Assignment operator
+     * @param other Vector to set from
+     * @return This vector's address
      */
-    String& dump(String& buf,
-	String& (*func)(String& dest, const Obj& item, const char* sep),
-	const char* sep = ",") const {
-	    if (!(func && length()))
-		return buf;
-	    String localBuf;
-	    const Obj* v = data();
-	    for (unsigned int n = length(); n; n--, v++)
-		(*func)(localBuf,*v,sep);
-	    return buf.append(localBuf);
+    inline SigProcVector& operator=(const SigProcVector* other) {
+	    if (other)
+		return operator=(*other);
+	    clear();
+	    return *this;
 	}
 
     /**
-     * Dump this array to string, split it and append lines to a buffer
+     * Dump this vector to a string
+     * @param buf Destination string
+     * @param func Pointer to function who appends the object to a String
+     * @param sep Vector elements separator
+     * @return Destination string address
+     */
+    inline String& dump(String& buf,
+	String& (*func)(String& dest, const Obj& item, const char* sep),
+	const char* sep = ",", unsigned int offs = 0, int len = -1) const
+	{ return dump(buf,data(),length(),func,0,-1,sep); }
+
+    /**
+     * Dump this vector to a string
+     * @param buf Destination string
+     * @param offs Offset in data to start
+     * @param nDump The number of elements to dump (negative: all, 0: none)
+     * @param func Pointer to function who appends the object to a String
+     * @param sep Vector elements separator
+     * @return Destination string address
+     */
+    inline String& dump(String& buf, unsigned int offs, int nDump,
+	String& (*func)(String& dest, const Obj& item, const char* sep),
+	const char* sep = ",")
+	{ return dump(buf,data(),length(),func,offs,nDump,sep); }
+
+    /**
+     * Dump this vector to string, split it and append lines to a buffer
      * @param buf Destination string
      * @param func Pointer to function who append the object to a String
      *  This parameter is required
@@ -613,7 +798,7 @@ public:
      * @param linePrefix Prefix for new lines.
      *  Set it to empty string or 0 to use the suffix
      * @param suffix String to always add to final result
-     * @param sep Array elements separator
+     * @param sep Vector elements separator
      * @return Destination string address
      */
     String& appendSplit(String& buf, unsigned int lineLen,
@@ -666,8 +851,8 @@ public:
 	
     /**
      * Build this vector from a hexadecimal string representation.
-     * Clears the array at start, i.e. the array will be empty on failure.
-     * The array may be empty on success also
+     * Clears the vector at start, i.e. the vector will be empty on failure.
+     * The vector may be empty on success also
      * Each octet must be represented in the input string with 2 hexadecimal characters.
      * If a separator is specified, the octets in input string must be separated using
      *  exactly 1 separator. Only 1 leading or 1 trailing separators are allowed.
@@ -686,10 +871,74 @@ public:
 		d.unHexify(str,len,(char)sep);
 	    if (!(ok && (d.length() % sizeof(Obj)) == 0))
 		return ok ? 1 : -1;
-	    m_data = (Obj*)d.data();
-	    m_length = d.length() / sizeof(Obj);
-	    d.clear(false);
+	    assign((Obj*)d.data(),d.length() / sizeof(Obj));
 	    return 0;
+	}
+
+    /**
+     * Compare with another vector. The vector item must implement the '==' operator
+     * @param other Vector to compare with
+     * @return This vector's length on success,
+     *  this vector's length plus 1 if the 2 vectors don't have the same length,
+     *  the index of the first different element otherwise
+     */
+    inline unsigned int compare(const SigProcVector& other)
+	{ return compare(*this,other); }
+
+    /**
+     * Dump data to a string
+     * @param buf Destination string
+     * @param data Data to dump
+     * @param len Data length
+     * @param func Pointer to function who appends the object to a String
+     * @param offs Offset in data to start
+     * @param nDump The number of elements to dump (negative: all, 0: none)
+     * @param sep Vector elements separator
+     * @return Destination string address
+     */
+    static String& dump(String& buf, const Obj* data, unsigned int len,
+	String& (*func)(String& dest, const Obj& item, const char* sep),
+	unsigned int offs = 0, int nDump = -1, const char* sep = ",") {
+	    if (!(func && data && len) || offs >= len)
+		return buf;
+	    if (nDump < 0)
+		len -= offs;
+	    else
+		len = SigProcUtils::min(len - offs,(unsigned int)nDump);
+	    String localBuf;
+	    for (data += offs; len; len--, data++)
+		(*func)(localBuf,*data,sep);
+	    return buf.append(localBuf);
+	}
+
+    /**
+     * Outputs data
+     * @param buf Destination string
+     * @param data Data to dump
+     * @param len Data length
+     * @param lineLen The number of elements to dump on each output
+     * @param func Pointer to function who appends the object to a String
+     * @param blockSep Optional text to be displayed before and after output
+     * @param sep Vector elements separator
+     * @return Destination string address
+     */
+    static void output(const Obj* data, unsigned int len, unsigned int lineLen,
+	String& (*func)(String& dest, const Obj& item, const char* sep),
+	const char* blockSep, const char* sep = ",") {
+	    if (!(func && data && len && lineLen))
+		return;
+	    if (lineLen > len)
+		lineLen = len;
+	    if (blockSep)
+		Output("%s",blockSep);
+	    for (unsigned int i = 0; i < len; data += lineLen) {
+		String tmp;
+		dump(tmp,data,lineLen,func,0,-1,sep);
+		i += lineLen;
+		Output("%s%s",tmp.c_str(),(i < len ? "," : ""));
+	    }
+	    if (blockSep)
+		Output("%s",blockSep);
 	}
 
     /**
@@ -699,8 +948,7 @@ public:
      * @return v1 length on success, v1 length plus 1 if the 2 vectors don't have the same length,
      *  the index of the first different element otherwise
      */
-    static unsigned int compare(const SigProcVector<Obj,basicType>& v1,
-	const SigProcVector<Obj,basicType>& v2) {
+    static unsigned int compare(const SigProcVector& v1, const SigProcVector& v2) {
 	    if (v1.length() != v2.length())
 		return v1.length() + 1;
 	    unsigned int i = 0;
@@ -711,6 +959,62 @@ public:
 	    return i;
 	}
 
+    /**
+     * Fill a vector
+     * @param dest Destination buffer
+     * @param destLen Destination buffer length
+     * @param value Value to fill with
+     * @param offs Optional offset in destination vector
+     * @return The number of elements set
+     */
+    static unsigned int fill(Obj* dest, unsigned int destLen, const Obj& value,
+	unsigned int offs = 0) {
+	    if (!dest || offs >= destLen)
+		return 0;
+	    unsigned int room = destLen - offs;
+	    dest += offs;
+	    for (unsigned int n = room; n; --n, ++dest)
+		*dest = value;
+	    return room;
+	}
+
+protected:
+    /**
+     * Copy elements from another vector
+     * @param dest Destination buffer
+     * @param destLen Destination buffer length
+     * @param ptr Pointer to data to copy
+     * @param n The number of bytes to copy
+     * @param offs Optional offset in our vector
+     * @return The number of elements copied
+     */
+    virtual unsigned int copy(Obj* dest, unsigned int destLen,
+	const Obj* ptr, unsigned int n, unsigned int offs = 0) {
+	    if (hardArrayOps)
+		return SigProcUtils::copy(dest,destLen,ptr,n,sizeof(Obj),offs);
+	    if (!(dest && destLen && ptr && n) || offs >= destLen)
+		return 0;
+	    n = SigProcUtils::min(destLen - offs,n);
+	    dest += offs;
+	    for (unsigned int i = n; i; --i, ++dest, ++ptr)
+		*dest = *ptr;
+	    return n;
+	}
+
+    /**
+     * Reset a vector
+     * @param dest Destination buffer
+     * @param destLen Destination buffer length
+     * @param offs Optional offset in vector
+     * @return The number of elements reset
+     */
+    virtual unsigned int reset(Obj* dest, unsigned int destLen, unsigned int offs = 0) {
+	    if (hardArrayOps)
+		return SigProcUtils::bzero(dest,destLen,sizeof(Obj),offs);
+	    Obj value;
+	    return fill(dest,destLen,value,offs);
+	}
+
 private:
      Obj* m_data;
      unsigned int m_length;
@@ -718,164 +1022,148 @@ private:
 
 
 typedef SigProcVector<Complex,false> ComplexVector;
-typedef SigProcVector<float,true> FloatVector;
-typedef SigProcVector<int,true> IntVector;
+typedef SigProcVector<float> FloatVector;
+typedef SigProcVector<int> IntVector;
+typedef SigProcVector<ComplexVector,false,false> ComplexVectorVector;
 
 
 /**
- * Helpful class which holds a vector of complex values
- * @short A Complex array
+ * @short Signal processing library
+ * NOTE: Class methods are not thread safe
  */
-class ComplexArray : public ComplexVector, public GenObject
-{
-    YCLASS(ComplexArray,GenObject)
-public:
-    /**
-     * Constructor
-     */
-    inline ComplexArray()
-	{}
-
-    /**
-     * Constructor from Complex array
-     * @param buf Source array
-     * @param inLen Input array size
-     * @param len Optional array size, 0 to use inLen
-     */
-    inline ComplexArray(unsigned int len)
-	: ComplexVector(len)
-	{}
-
-    /**
-     * Constructor from Complex array
-     * @param ptr Source buffer
-     * @param n Elements to copy from source buffer
-     * @param len Optional vector length, 0 to use source buffer length
-     */
-    inline ComplexArray(const Complex* ptr, unsigned int n, unsigned int len = 0)
-	: ComplexVector(ptr,n,len)
-	{}
-
-    /**
-     * Constructor from int16 array
-     * @param buf Source array
-     * @param len The array size
-     */
-    inline ComplexArray(const int16_t* buf, unsigned int len)
-	: ComplexVector((len + 1) / 2)
-	{ setInt16(buf,len); }
-
-    /**
-     * Set array elements from 16 bit integers array
-     * @param buf The source buffer
-     * @param len Buffer length in 16 integer bit elements
-     * @param offs Optional offset in our array to start copy
-     */
-    inline void setInt16(const int16_t* buf, unsigned int len, unsigned int offs = 0)
-	{ Complex::setInt16(data(),length(),buf,len,offs); }
-
-    /**
-     * Sum this array with another one.
-     * @param ca The complex array to sum with.
-     */
-    inline void sum(const ComplexArray& ca)
-	{ Complex::sum(data(),length(),ca.data(),ca.length()); }
-
-    /**
-     * Multiply this array with another one.
-     * @param ca The complex array to multiply with.
-     */
-    inline void multiply(const ComplexArray& ca)
-	{ Complex::multiply(data(),length(),ca.data(),ca.length()); }
-
-    /**
-     * Helper method to dump all the data from the array
-     * @param dest The destination string.
-     * @param sep Optionaly a separator between values.
-     */
-    inline void dump(String& dest, const char* sep = " ") const
-	{ Complex::dump(dest,data(),length(),sep); }
-};
-
-
 class SignalProcessing
 {
 public:
-
+    /**
+     * Laurent Pulse Approximation table to use when generating the vector
+     */
+    enum LaurentPATable {
+	LaurentPADef = 0,
+	LaurentPANone
+    };
+	
     /**
      * Constructor
      */
-    SignalProcessing()
-	: m_oversample(0), m_arfcns(0), m_sinusoids(0)
-	{}
+    SignalProcessing();
 
     /**
-     * Destructor
+     * Retrieve the length of modulated data (BITS_PER_TIMESLOT multiplied by
+     *  oversampling value)
+     * This value is the length of a GSM slot sampled at 'oversample'
+     * @return Length of modulated data
      */
-    ~SignalProcessing();
+    inline unsigned int gsmSlotLen() const
+	{ return m_gsmSlotLen; }
+
+    /**
+     * Retrieve the Laurent Pulse Approximation vector
+     * @return Laurent Pulse Approximation vector
+     */
+    inline const FloatVector& laurentPA() const
+	{ return m_laurentPA; }
+
+    /**
+     * Retrieve ARFCN frequency shifting vector
+     * @param arfcn Requested ARFCN number
+     * @return Requested vector, 0 if given 'arfcn' don't exist
+     */
+    inline const ComplexVector* arfcnFS(unsigned int arfcn) const
+	{ return (arfcn < m_arfcnFS.length()) ? (m_arfcnFS.data() + arfcn) : 0; }
 
     /**
      * Initialize internal data
      * @param oversample The oversampling value of the transceiver
      * @param arfcns The number of arfcns used by the transceiver
+     * @param lpaTbl Laurent Pulse Approximation table to use
      */
-    void initialize(unsigned int oversample, unsigned int arfcns);
+    void initialize(unsigned int oversample, unsigned int arfcns,
+	LaurentPATable lpaTbl = LaurentPADef);
 
     /**
-     * Generate frequency shift complex array
-     * Formula used: ret[i] = e^(-sqrt(-1) * i * PI / 2 * oversample)
-     * @param out The output complex array
-     * @param oversample The oversample value used to generate the frequency shift
+     * Modulate bits
+     * @param out Destination vector for modulated data
+     * @param bits Input bits (it will be used as received, no 0/1 checking is done)
+     * @param len Input bits buffer length
+     * @param tmpV Optional temporary buffer (used to avoid re-allocating memory)
+     * @param tmpW Optional temporary buffer (used to avoid re-allocating memory)
      */
-    static void fillFrequencyShift(ComplexArray* out, unsigned int oversample);
+    void modulate(ComplexVector& out, const uint8_t* bits, unsigned int len,
+	FloatVector* tmpV = 0, ComplexVector* tmpW = 0) const;
 
     /**
-     * Generate Laurent pulse aproximation complex array
-     * Formula used: ret[i] = 0.96  * e ^ g(i) / oversample
-     * Where g(i) = -1.138 * ((i - oversample * 3) / oversample) ^ 2 -
-     *        0.527 * ((i - oversample * 3) / oversample) ^ 4
-     * @param out The output complex array
-     * @param oversample The oversample value used to generate the pulse
+     * Frequency shift ARFCN data (out[n] = data[n] * arfcnFS(arfcn)[n]).
+     * Multiply data with ARFCN shifting values and put the result in output
+     * @param out Output vector. Data must be already allocated
+     * @param data Modulated data
+     * @param arfcn Requested ARFCN
      */
-    static void fillLaurentPulseAproximation(ComplexArray* out, unsigned int oversample);
+    inline void freqShift(ComplexVector& out, const ComplexVector& data,
+	    unsigned int arfcn) const {
+	    const ComplexVector* fs = arfcnFS(arfcn);
+	    if (fs)
+		Complex::multiply(out.data(),out.length(),
+		    data.data(),data.length(),fs->data(),fs->length());
+	}
 
     /**
-     * Calculate the convolution of two arrays of complex numbers.
-     * Algorithm used: ret[x] = SUM (for i = 0 to n) from (ca1[x + i] * ca2[n - i])
-     * Where: n represents the length of ca2 - 1
-     * @param ca1 The first complex array
-     * @param ca2 The second complex array
-     * @return The convolved array.
+     * Frequency shift ARFCN data.
+     * Multiply data with ARFCN shifting values and put the result in output
+     * @param data Modulated data
+     * @param arfcn Requested ARFCN
      */
-    static ComplexArray* getConvolution(const ComplexArray& ca1, const ComplexArray& ca2);
+    inline void freqShift(ComplexVector& data, unsigned int arfcn) const
+	{ freqShift(data,data,arfcn); }
 
     /**
-     * Modulate the given data.
-     * @param inData Data to modulate.
-     * @param inDataLength Length of the data to modulate.
-     * @return The modulated data or 0 on error.
+     * Sum the ARFCN frequency shift vectors
+     * out[n] = SUM(i=0..k)(m_arfcnFS[i][n])
+     * @param out Output vector; it will be resized to requested length
+     * @param arfcnMask ARFCNs to use. A bit set will indicate the ARFCN to
+     *  use (e.g. the value 0x05 - binary 101 - would sum ARFCN 0 and 2)
      */
-    inline ComplexArray* modulate(unsigned char* inData, unsigned int inDataLength) const
-	{ return modulate(inData,inDataLength,m_oversample,&m_freqencyShift,&m_laurentPulseAproximation); }
+    void sumFreqShift(ComplexVector& out, unsigned int arfcnMask = 0xffffffff) const;
 
     /**
-     * Modulate the given data with the specified parameters
-     * @param inData The data to modulate
-     * @param inDataLength Length of the data to modulate.
-     * @param oversample The oversample rate used
-     * @
-     * @return The modulated data or 0 on error.
+     * Retrieve the length of modulated data (BITS_PER_TIMESLOT multiplied by
+     *  oversampling value)
+     * This value is the length of a GSM slot sampled at 'oversample'
+     * @param oversample The oversample value
+     * @return Length of modulated data
      */
-    static ComplexArray* modulate(unsigned char* inData, unsigned int inDataLength, 
-	unsigned int oversample, const ComplexArray* frequencyShift,
-	const ComplexArray* laurentPulseAproximation);
+    static inline unsigned int gsmSlotLen(unsigned int oversample)
+	{ return (unsigned int)::ceil(BITS_PER_TIMESLOT * oversample); }
 
     /**
-     * Get the precalculated sinusoid array for the given arfcn
-     * @param arfcn The arfcn number of the sinusoid array
-     * @return The sinusoid array or 0.
+     * Generate Laurent pulse aproximation vector
+     * @param out The output vector. It will be resized to required length
+     * @param lpaTbl The table to use to generate
+     * @param oversample The oversample value used to generate the vector.
+     *  This parameter is ignored if a valid index (less then LaurentPANone)
      */
-    const ComplexArray* getSinusoid(unsigned int arfcn) const;
+    static void generateLaurentPulseAproximation(FloatVector& out,
+	LaurentPATable lpaTbl = LaurentPADef, unsigned int oversample = 1);
+
+    /**
+     * Generate ARFCNs frequency shifting vectors
+     * @param out The output vector. It will be resized to required length
+     * @param arfcns The number of arfcns
+     * @param oversample The oversample value used to generate the vectors
+     */
+    static void generateARFCNsFreqShift(ComplexVectorVector& out, unsigned int arfcns,
+	unsigned int oversample = 1);
+
+    /**
+     * Calculate the convolution of 2 vectors.
+     * Result: out[n] = SUM(i=0..Lp)(f[n + i] * g[Lp - 1 - i]).
+     * Where Lp is the g vector length
+     * @param out The output vector. It will be resized to 'f' length - Lp
+     * @param f The first vector. It MUST be padded with (0,0) elements:
+     *  leading: Lp / 2, trailing: Lp - Lp / 2
+     * @param g The second vector
+     */
+    static void convolution(ComplexVector& out, const ComplexVector& f,
+	const FloatVector& g);
 
     /**
      * Generate a frequency shifting vector
@@ -912,21 +1200,42 @@ public:
      */
     static float computePower(const float* data, unsigned int len,
 	unsigned int middle, float param = 1.0);
-    
-    inline unsigned int getModulatedLength() const
-	{ 
-	    unsigned int modlen = m_oversample * BITS_PER_TIMESLOT;
-	    return (m_oversample % 4 != 0) ? modlen++ : modlen;
+
+    /**
+     * Sum 'out' with input 'data'.
+     * Avoid 'out' data realloc (uses copy if it's the first time to sum)
+     * @param out Destination vector
+     * @param data Input vector
+     * @param first IN/OUT first flag
+     * @return True if output data was changed
+     */
+    static inline bool sum(ComplexVector& out, const ComplexVector& data,
+	bool& first) {
+	    if (!data.length())
+		return false;
+	    if (first) {
+		if (out.length() == data.length())
+		    out.copy(data);
+		else
+		    out = data;
+		first = false;
+	    }
+	    else
+		Complex::sum(out.data(),out.length(),data.data(),data.length());
+	    return true;
 	}
 
-protected:
-    void buildSinusoids();
 private:
-    unsigned int m_oversample;
-    unsigned int m_arfcns;
-    ComplexArray* m_sinusoids;
-    ComplexArray m_freqencyShift;
-    ComplexArray m_laurentPulseAproximation;
+    // Init oversampling rate and related data
+    void setOversample(unsigned int oversample);
+
+    unsigned int m_oversample;           // Oversampling
+    unsigned int m_gsmSlotLen;           // GSM slot length
+    FloatVector m_laurentPA;             // Laurent Pulse Approximation
+    ComplexVectorVector m_arfcnFS;       // ARFCN Frequency Shifting
+    // Modulate data
+    unsigned int m_rampOffset;           // Power ramping offset
+    unsigned int m_rampTrailIdx;         // Index of power ramping trailing edge
 };
 
 }; // namespace TelEngine

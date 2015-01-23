@@ -36,6 +36,12 @@ static const int8_t s_nbTscTable[8][GSM_NB_TSC_LEN] = {
     {1,1,1,0,1,1,1,1,0,0,0,1,0,0,1,0,1,1,1,0,1,1,1,1,0,0}
 };
 
+static inline uint32_t net2uint32(const unsigned char* buf)
+{
+    return ((uint32_t)buf[0]) << 24 | ((uint32_t)buf[1]) << 16 |
+	((uint32_t)buf[2]) << 8 | ((uint32_t)buf[3]);
+}
+
 // GSM Sync Bits for Access Burst (See TS 100 908 - GSM 05.02 Section 5.2.7)
 static const int8_t s_abSyncTable[GSM_AB_SYNC_LEN] =
     {0,1,0,0,1,0,1,1,0,1,1,1,1,1,1,1,1,0,0,1,1,0,0,1,1,0,1,0,1,0,1,0,0,0,1,1,1,1,0,0,0};
@@ -54,122 +60,87 @@ const int8_t* GSMUtils::abSyncTable()
     return s_abSyncTable;
 }
 
-GSMTxBurst GSMTxBurst::s_zeroBurst;
 
 //
 // GSMTxBurst
 //
-GSMTxBurst::~GSMTxBurst()
+// Build TX data
+const ComplexVector& GSMTxBurst::buildTxData(unsigned int arfcn,
+    const SignalProcessing& proc, FloatVector* tmpV, ComplexVector* tmpW,
+    const DataBlock& buf)
 {
-    TelEngine::destruct(m_transformed);
+    if (m_txData.length())
+	return m_txData;
+    const DataBlock& tmp = buf.length() ? buf : *static_cast<const DataBlock*>(this);
+    if (tmp.length()) {
+	proc.modulate(m_txData,tmp.data(0),tmp.length(),tmpV,tmpW);
+	proc.freqShift(m_txData,arfcn);
+    }
+    return m_txData;
 }
 
-GSMTxBurst* GSMTxBurst::get(const DataBlock& data, unsigned int length)
+// Parse received (from upper layer) TX burst
+// Expected format:
+// 1 byte:  Time slot number (MSB bit: set if burst is filler)
+// 4 bytes: Frame number
+// 1 byte:  Power level
+// The rest should be burst data of size GSM_BURST_LENGTH
+// Expected size: GSM_BURST_TXPACKET
+// The power is received in decibels.
+// power = amplitude * 2
+// amplitude = 10^(decibels / 20)
+// power = 10 ^ (decibels / 10)
+// Maximum decibels level is 0 so the power level received will be <= 0
+// In conclusion  powerLevel = 10^(-receivedPowerLevel/10)
+GSMTxBurst* GSMTxBurst::parse(const uint8_t* buf, unsigned int len, DataBlock* dataBits)
 {
 #ifdef XDEBUG
     String tmp;
-    tmp.hexify(data.data(),length);
-    Debug(DebugAll,"GSMTxBurst::get() data in: %s",tmp.c_str());
+    tmp.hexify((void*)buf,len);
+    Debug(DebugAll,"GSMTxBurst::parse() len=%u: %s",len,tmp.c_str());
 #endif
-    // We have:
-    // data[0] Time slot number
-    // data[1-4] Frame number
-    // data[5] power level
-    // The rest should be burst data of size GSM_BURST_LENGTH
-
-    // The data size should be GSM_BURST_LENGTH + 1 (time slot number) + 4 (Frame number) + 1 (power level)
-    if (length != GSM_BURST_LENGTH + 6) {
-	Debug(DebugMild,"Received invalid data length %u for GSMTxBurst! Expected %u",
-	    length,GSM_BURST_LENGTH + 6);
+    if (!(buf && len))
+	return 0;
+    if (len != GSM_BURST_TXPACKET) {
+	Debug(DebugMild,"GSMTxBurst::parse() invalid len=%u expected=%u",
+	    len,GSM_BURST_TXPACKET);
 	return 0;
     }
-    GSMTxBurst* burst = new GSMTxBurst();
-    burst->m_time.assign(data.at(1) << 24 | data.at(2) << 16 | data.at(3) << 8 | data.at(4),data.at(0) & 0x7f);
-    burst->m_isFillerBurst = (data.at(0) & 0x80) != 0;
-    // The power is received in decibels.
-    // power = amplitude * 2
-    // amplitude = 10^(decibels/20)
-    // power = 10 ^ (decibels / 10)
-    // Maximum decibels level is 0 so the power level received will be <= 0
-    // In conclusion  powerLevel = 10^(-receivedPowerLevel/10)
-    burst->m_powerLevel = ::pow(10, -data.at(5) / 10); // This should be between 0 and 1! See how should be transformed!
-
-    burst->assign(0,4);
-    burst->append((void*)data.data(6),GSM_BURST_LENGTH);
-    uint8_t a[4];
-    a[0] = a[1] = a[2] = a[3] = 0;
-    burst->append(a,4);
+    GSMTxBurst* burst = new GSMTxBurst;
+    burst->m_filler = (buf[0] & 0x80) != 0;
+    burst->m_time.assign(net2uint32(buf + 1),buf[0] & 0x7f);
+    burst->m_powerLevel = ::pow(10, -(float)buf[5] / 10);
+    // This should be between 0 and 1
+    if (burst->m_powerLevel < 0 || burst->m_powerLevel > 1) {
+	Debug(DebugGoOn,"Clamping received TX burst power level %u (%g) to [0..1]",
+	    buf[5],burst->m_powerLevel);
+	if (burst->m_powerLevel < 0)
+	    burst->m_powerLevel = 0;
+	else
+	    burst->m_powerLevel = 1;
+    }
+    if (dataBits)
+	dataBits->assign((void*)(buf + GSM_BURST_TXHEADER),GSM_BURST_LENGTH,false);
+    else
+	burst->assign((void*)(buf + GSM_BURST_TXHEADER),GSM_BURST_LENGTH);
     return burst;
 }
 
-GSMTxBurst* GSMTxBurst::getZeroBurst()
-{ 
-    if (!GSMTxBurst::s_zeroBurst.m_transformed) {
-	s_zeroBurst.m_isDummy = true;
-    }
-    return &s_zeroBurst;
-}
-
-const ComplexArray* GSMTxBurst::transform(const SignalProcessing& sigproc)
+// Build a default dummy burst
+GSMTxBurst* GSMTxBurst::buildFiller()
 {
-    if (m_transformed)
-	return m_transformed;
-    if (this == &s_zeroBurst) {
-	m_transformed = new ComplexArray(sigproc.getModulatedLength());
-	return m_transformed;
-    }
-    m_transformed = sigproc.modulate((unsigned char*)data(),length());
-    if (!m_transformed)
-	return 0;
-    
-    
-/*    
-    float amp = (1 - 0.01) / 16;
-    for (unsigned int i = 0;i < 24;i++) {
-	if (i < 8)
-	    (*m_transformed)[i].set(0.01,0);
-	else
-	    Complex::multiplyF((*m_transformed)[i],(*m_transformed)[i],amp * (i + 1 - 8));
-    }
-    
-    unsigned int startSample = 1208;
-    for (unsigned int i = startSample;i < 1246;i++) {
-	if (i < startSample + 16)
-	    Complex::multiplyF((*m_transformed)[i],(*m_transformed)[i],amp * (startSample + 16 - i));
-	else
-	    Complex::multiplyF((*m_transformed)[i],(*m_transformed)[i],0.01);
-    }
-*/   
-    // NOTE Start
-    // This is a test variant for power ramp
-    float amp = (1 - 0.01) / 4;
-    for (unsigned int i = 0;i < 24;i++) {
-	if (i < 20)
-	    (*m_transformed)[i].set(0.01,0);
-	else
-	    Complex::multiplyF((*m_transformed)[i],(*m_transformed)[i],amp * (i + 1 - 20));
-    }
-    
+    static const uint8_t s_dummyBurst[GSM_BURST_TXPACKET] = {
+	0,0,0,0,0,0,
+	0,0,0,1,1,1,1,1,0,1,1,0,1,1,1,0,1,1,0,0,0,0,0,1,0,1,0,0,1,0,0,1,1,1,0,0,0,
+	0,0,1,0,0,1,0,0,0,1,0,0,0,0,0,0,0,1,1,1,1,1,0,0,0,1,1,1,0,0,0,1,0,1,1,1,0,
+	0,0,1,0,1,1,1,0,0,0,1,0,1,0,1,1,1,0,1,0,0,1,0,1,0,0,0,1,1,0,0,1,1,0,0,1,1,
+	1,0,0,1,1,1,1,0,1,0,0,1,1,1,1,1,0,0,0,1,0,0,1,0,1,1,1,1,1,0,1,0,1,0,0,0,0
+    };
 
-    unsigned int startSample = 1208;
-    for (unsigned int i = startSample;i < 1246;i++) {
-	if (i < startSample + 4)
-	    Complex::multiplyF((*m_transformed)[i],(*m_transformed)[i],amp * (startSample + 4 - i));
-	else
-	    (*m_transformed)[i].set(0.01,0);
-    }
-    // NOTE End
-    
-    const ComplexArray* sinusoid = sigproc.getSinusoid(m_arfcnNumber);
-    if (!sinusoid || sinusoid->length() != m_transformed->length()) {
-	TelEngine::destruct(m_transformed);
-	return 0;
-    }
-    m_transformed->multiply(*sinusoid);
-    // Apply the power level
-    for (unsigned i = 0;i < m_transformed->length();i++)
-	Complex::multiplyF((*m_transformed)[i],(*m_transformed)[i],m_powerLevel);
-    return m_transformed;
+    GSMTxBurst* b = parse(s_dummyBurst,sizeof(s_dummyBurst));
+    if (b)
+	b->m_filler = true;
+    return b;
 }
 
 

@@ -43,20 +43,36 @@ static const String s_arfcnIn0('0',GSM_BURST_LENGTH);
 static const String s_arfcnIn1('1',GSM_BURST_LENGTH);
 static const float s_gsmSymbolRate = 13e6 / 48.0;
 
+enum CompareSource
+{
+	CmpNone = 0,
+	CmpFromSignalProcessing,
+	CmpFromCfg,
+};
+
+const TokenDict s_cmpName[] =
+{
+	{"signalprocessing", CmpFromSignalProcessing},
+	{"config", CmpFromCfg},
+	{0,0},
+};
+
 static int s_code = 0;
 static Configuration s_cfg;
 static unsigned int s_arfcns = 0;
 static unsigned int s_oversampling = 8;
-static bool s_cmpFromCfg = true;
+static int s_cmpSrc = CmpFromSignalProcessing;
 static String s_extraInputParams;
 static String s_extraResultParams;
 // Output
 static unsigned int s_lineLen = 120;
 static unsigned int s_lineDec = 2;
+static bool s_debug = false;
 static bool s_dumpStr = true;
 static bool s_dumpHex = true;
 static bool s_confFileStyle = true;
 static String s_linePrefix;
+static SignalProcessing s_signalProcessing;
 
 enum CheckPoint {
 	Input = 0,
@@ -66,6 +82,7 @@ enum CheckPoint {
 	ARFCNw,
 	ARFCNx,
 	ARFCNs,
+	ARFCNTx,
 	FreqShift,
 	CheckPointOk
 };
@@ -78,6 +95,7 @@ const TokenDict s_pointLabel[] =
 	{"v", ARFCNv},
 	{"w", ARFCNw},
 	{"modulated", ARFCNx},
+	{"tx", ARFCNTx},
 	{"frequency_shifting", ARFCNs},
 	{"Frequency shifted", FreqShift},
 	{0,0},
@@ -92,20 +110,6 @@ String& appendUInt8(String& dest, const uint8_t& val, const char* sep)
 {
 	char s[80];
 	sprintf(s,"%u",val);
-	return dest.append(s,sep);
-}
-
-String& appendFloat(String& dest, const float& val, const char* sep)
-{
-	char s[80];
-	sprintf(s,"%g",val);
-	return dest.append(s,sep);
-}
-
-String& appendComplex(String& dest, const Complex& val, const char* sep)
-{
-	char s[170];
-	sprintf(s,"%g%+gi",val.real(),val.imag());
 	return dest.append(s,sep);
 }
 
@@ -132,6 +136,7 @@ class TestDataVectorIface
 {
 public:
 	virtual unsigned int dataLen() const  = 0;
+	virtual unsigned int compareLen() const  = 0;
 	virtual String& appendFromIndex(String& dest, unsigned int index, bool data) = 0;
 	virtual String& dump(String& dest, const String& pName = String::empty(),
 	bool* dumpStr = 0, bool* dumpHex = 0, const char* sep = ",",
@@ -147,8 +152,13 @@ public:
 		m_data.clear();
 		m_compare.clear();
 	}
+
 	virtual unsigned int dataLen() const
 	{ return m_data.length(); }
+
+	virtual unsigned int compareLen() const
+	{ return m_compare.length(); }
+
 	virtual String& appendFromIndex(String& dest, unsigned int index, bool data) {
 		const SigProcVector<Obj,basicType>& what = data ? m_data : m_compare;
 		if (index < what.length())
@@ -188,7 +198,7 @@ public:
 			dest << pName << "_length=" << what->length() << "\r\n";
 		unsigned int first = 0;
 		if (*dumpStr) {
-				first = addPName(dest,pName,"_str=");
+			first = addPName(dest,pName,"_str=");
 			if (!s_lineLen)
 				what->dump(dest,funcAppendToStr,sep) += "\r\n";
 			else
@@ -199,6 +209,7 @@ public:
 		first = addPName(dest,pName,"_hex=");
 		return what->appendSplitHex(dest,s_lineLen,first,s_linePrefix,"\r\n");
 	}
+
 	// Unhexify compare from config param
 	int unHexify(const String& sect, const String& param) {
 		NamedString* tmp = s_cfg.getKey(sect,param);
@@ -207,26 +218,37 @@ public:
 			res = m_compare.unHexify(tmp->c_str(),tmp->length());
 		else
 			m_compare.clear();
-		if (res != 0)
+		if (res != 0) {
+			const char* what = (res > 0 ? "length" : "format");
+			if (s_debug)
+				Debug(DebugNote,
+					"Invalid hex data %s param=%s in section [%s]",
+					what,param.c_str(),sect.c_str());
 			s_extraInputParams << "invalid_input_skip_compare=invalid hex data " <<
-				(res > 0 ? "length" : "format") << " for '" << param <<
-				"' section=[" << sect << "]\r\n";
+				what << " for '" << param << "' section=[" << sect << "]\r\n";
+		}
+		else if (s_debug && !TelEngine::null(tmp))
+			Debug(DebugAll,
+				"Read %u elements from hex data param=%s in section [%s]",
+				m_compare.length(),param.c_str(),sect.c_str());
 		return res;
 	}
+
 	// Compare data if m_compare length is not 0. Result is set only if comparing
 	virtual bool compare(unsigned int& result) {
 		if (!m_compare.length())
 			return true;
-		result = SigProcVector<Obj,basicType>::compare(m_data,m_compare);
+		result = m_data.compare(m_compare);
 		return result == m_data.length();
 	}
+
 	SigProcVector<Obj,basicType> m_data;
 	SigProcVector<Obj,basicType> m_compare;
 };
 
 typedef TestDataVector<uint8_t,true,appendUInt8> TestUint8Unit;
-typedef TestDataVector<float,true,appendFloat> TestFloatUnit;
-typedef TestDataVector<Complex,false,appendComplex> TestComplexUnit;
+typedef TestDataVector<float,true,SigProcUtils::appendFloat> TestFloatUnit;
+typedef TestDataVector<Complex,false,SigProcUtils::appendComplex> TestComplexUnit;
 
 class TestARFCN : public String
 {
@@ -251,6 +273,7 @@ public:
 	TestComplexUnit m_w;
 	TestComplexUnit m_x;
 	TestComplexUnit m_s;
+	TestComplexUnit m_tx;
 
 private:
 	unsigned int m_arfcn;
@@ -314,9 +337,9 @@ BuildTx::BuildTx()
 				static const unsigned s_payloadLen = 58;
 				static const unsigned s_midambleLen = 26;
 				static const char* s_digits[2]={"0","1"};
+				String tail('0',s_tailLen);
 				// tail bits
-				for (unsigned i=0; i<s_tailLen; i++)
-					s.append("0");
+				s << tail;
 				// payload bits
 				for (unsigned i=0; i<s_payloadLen; i++)
 					s.append(s_digits[random()%2]);
@@ -327,8 +350,7 @@ BuildTx::BuildTx()
 				for (unsigned i=0; i<s_payloadLen; i++)
 					s.append(s_digits[random()%2]);
 				// tail bits
-				for (unsigned i=0; i<s_tailLen; i++)
-					s.append("0");
+				s << tail;
 			}
 			a.m_inBits.m_data.resize(GSM_BURST_LENGTH);
 			if (!a.m_inBits.readBits(s)) {
@@ -337,42 +359,73 @@ BuildTx::BuildTx()
 			}
 			a.m_inPower = 1.0;
 		}
-		if (s_cmpFromCfg) {
+		switch (s_cmpSrc) {
+			case CmpFromCfg:
 #define ARFCN_TEST_UNHEXIFY(vect,point) a.vect.unHexify(name,name + "_" + pointLabel(point) + "_hex")
-			if (!a.m_filler) {
-				ARFCN_TEST_UNHEXIFY(m_v,ARFCNv);
-				ARFCN_TEST_UNHEXIFY(m_w,ARFCNw);
-				ARFCN_TEST_UNHEXIFY(m_x,ARFCNx);
-			}
-			ARFCN_TEST_UNHEXIFY(m_s,ARFCNs);
+				if (!a.m_filler) {
+					ARFCN_TEST_UNHEXIFY(m_v,ARFCNv);
+					ARFCN_TEST_UNHEXIFY(m_w,ARFCNw);
+					ARFCN_TEST_UNHEXIFY(m_x,ARFCNx);
+					ARFCN_TEST_UNHEXIFY(m_tx,ARFCNTx);
+				}
+				ARFCN_TEST_UNHEXIFY(m_s,ARFCNs);
 #undef ARFCN_TEST_UNHEXIFY
+				break;
+			case CmpFromSignalProcessing:
+				s_signalProcessing.modulate(a.m_x.m_compare,
+							    a.m_inBits.m_data.data(),
+							    a.m_inBits.m_data.length(),
+							    &a.m_v.m_compare,&a.m_w.m_compare);
+				// The signal processing added padding to 'w'
+				if (a.m_w.m_compare.length() > a.m_x.m_compare.length()) {
+					unsigned int wLen = a.m_w.m_compare.length();
+					unsigned int diff = wLen - a.m_x.m_compare.length();
+					a.m_w.m_compare.assignSlice(diff / 2,wLen - diff);
+				}
+				else if (a.m_w.m_compare.length() < a.m_x.m_compare.length())
+					a.m_w.m_compare.clear();
+				a.m_s.m_compare = s_signalProcessing.arfcnFS(i);
+				a.m_tx.m_compare = a.m_x.m_compare;
+				s_signalProcessing.freqShift(a.m_tx.m_compare,i);
+				break;
 		}
 	}
 	if (i < m_arfcnCount) {
 		resetArfcns();
 		return;
 	}
+	switch (s_cmpSrc) {
+		case CmpFromCfg:
 #define BUILD_TEST_UNHEXIFY(vect,point) vect.unHexify(pointLabel(point),"data_hex")
-	if (s_cmpFromCfg) {
-		BUILD_TEST_UNHEXIFY(m_laurentPA,LaurentPA);
-		BUILD_TEST_UNHEXIFY(m_laurentFS,LaurentFS);
-		BUILD_TEST_UNHEXIFY(m_y,FreqShift);
-	}
+			BUILD_TEST_UNHEXIFY(m_laurentPA,LaurentPA);
+			BUILD_TEST_UNHEXIFY(m_laurentFS,LaurentFS);
+			BUILD_TEST_UNHEXIFY(m_y,FreqShift);
 #undef BUILD_TEST_UNHEXIFY
+			break;
+		case CmpFromSignalProcessing:
+			m_laurentPA.m_compare = s_signalProcessing.laurentPA();
+			m_y.m_compare.clear();
+			for (unsigned int i = 0; i < m_arfcnCount; i++) {
+				TestARFCN& a = m_arfcns[i];
+				if (a.m_filler)
+					continue;
+				bool first = m_y.m_compare.length() == 0;
+				SignalProcessing::sum(m_y.m_compare,a.m_tx.m_compare,first);
+			}
+			break;
+	}
 }
 
-// Build input data (TX)
+// Test
 bool BuildTx::test()
 {
 	if (!m_arfcns)
-	return false;
+		return false;
 
 #define CHECKPOINT(point,arfcn) \
 	m_checkPoint = point; \
 	if (!checkPoint(point,arfcn)) \
 	break
-
-	const float PI2 = 2.0F*PI;
 
 	// By hardcoding the Laurent pulse oversampling is hardcoded to 8.
 	// But the QMF design in the receive side hardcodes the oversampling to 8 anyway.
@@ -397,11 +450,13 @@ bool BuildTx::test()
 		m_laurentPA.m_data.resize(Lp);
 		float* hp = m_laurentPA.m_data.data();
 		for (unsigned int n = 0; n < m_laurentPA.m_data.length(); n++) {
+#if 0
 			float f = ((float)n - (Lp / 2)) / K;
 			float f2 = f * f;
 			// DAB - Note sign error in the first term in the line below.
 			float g = -1.138 * f2 - 0.527 * f2 * f2;
 			//hp[n] = 0.96 * ::expf(g);
+#endif
 			hp[n] = c0[n];
 		}
 		CHECKPOINT(LaurentPA,0);
@@ -432,7 +487,6 @@ bool BuildTx::test()
 				// Calculate v: v[n] = 2 * b[n] * floor(n / K) - 1
 				a.m_v.m_data.assign(Ls);
 				float* v = a.m_v.m_data.data();
-				float vprev = 0;
 				static const int rampOffset = 4 * s_oversampling;
 				for (unsigned int n = 0; n < a.m_v.m_data.length(); n++) {
 					if (n%s_oversampling) continue;
@@ -506,6 +560,15 @@ bool BuildTx::test()
 				if (phi>PI2) phi -= PI2;
 			}
 			CHECKPOINT(ARFCNs,&a);
+			
+			// TX data
+			a.m_tx.m_data.assign(a.m_x.m_data.length());
+			Complex* x = a.m_x.m_data.data();
+			Complex* s = a.m_s.m_data.data();
+			Complex* tx = a.m_tx.m_data.data();
+			for (unsigned int n = 0; n < a.m_tx.m_data.length(); n++)
+			    tx[n] = x[n] * s[n];
+			CHECKPOINT(ARFCNTx,&a);
 		}
 
 		if (m_failedArfcn < m_arfcnCount)
@@ -550,25 +613,39 @@ bool BuildTx::checkPoint(unsigned int point, TestARFCN* arfcn)
 		return false; \
 	SET_POINT_VECT_BREAK(cv,fv)
 
-	case Input:
-		return true;
-	CASE_POINT_VECT(LaurentPA,0,&m_laurentPA);
-	CASE_POINT_VECT(LaurentFS,&m_laurentFS,0);
-	CASE_POINT_VECT_A(ARFCNv,0,&arfcn->m_v);
-	CASE_POINT_VECT_A(ARFCNw,&arfcn->m_w,0);
-	CASE_POINT_VECT_A(ARFCNx,&arfcn->m_x,0);
-	CASE_POINT_VECT_A(ARFCNs,&arfcn->m_s,0);
-	CASE_POINT_VECT(FreqShift,&m_y,0);
-	default:
-		return true;
+		case Input:
+			return true;
+		CASE_POINT_VECT(LaurentPA,0,&m_laurentPA);
+		CASE_POINT_VECT(LaurentFS,&m_laurentFS,0);
+		CASE_POINT_VECT_A(ARFCNv,0,&arfcn->m_v);
+		CASE_POINT_VECT_A(ARFCNw,&arfcn->m_w,0);
+		CASE_POINT_VECT_A(ARFCNx,&arfcn->m_x,0);
+		CASE_POINT_VECT_A(ARFCNs,&arfcn->m_s,0);
+		CASE_POINT_VECT_A(ARFCNTx,&arfcn->m_tx,0);
+		CASE_POINT_VECT(FreqShift,&m_y,0);
+		default:
+			return true;
 	}
 
 	bool ok = true;
 	// Compare
 	while (v) {
+		String s;
+		if (s_debug) {
+			s << "Comparison for '" << pointLabel(point) << "' vector";
+			if (arfcn)
+				s << " (ARFCN=" << arfcn->arfcn() << ")";
+		}
 		unsigned int result = 0;
-		if (v->compare(result))
+		if (v->compare(result)) {
+			if (s) {
+				if (v->compareLen())
+					Debug(DebugInfo,"%s: PASSED",s.c_str());
+				else
+					Debug(DebugAll,"%s: no data",s.c_str());
+			}
 			break;
+		}
 		m_failedPoint.clear();
 		m_failedPoint << "'" << pointLabel(point) << "'";
 		if (arfcn) {
@@ -582,9 +659,21 @@ bool BuildTx::checkPoint(unsigned int point, TestARFCN* arfcn)
 			v->appendFromIndex(s_extraResultParams,result,true) += "\r\n";
 			s_extraResultParams << "compare_value=";
 			v->appendFromIndex(s_extraResultParams,result,false) += "\r\n";
+			if (s) {
+				s << " FAILED index=" << result;
+				s << " generated_value=";
+				v->appendFromIndex(s,result,true);
+				s << " compare_value=";
+				v->appendFromIndex(s,result,false);
+			}
 		}
-		else
+		else {
 			s_extraResultParams << "vectors have different length\r\n";
+			if (s)
+				s << " FAILED: vectors have different length";
+		}
+		if (s)
+			Debug(DebugNote,"%s",s.c_str());
 		ok = false;
 		break;
 	}
@@ -618,51 +707,54 @@ void BuildTx::saveResult()
 		if (m_arfcns[i].m_filler)
 			continue;
 		*buf << name << "_power=";
-		appendFloat(*buf,m_arfcns[i].m_inPower,0) += "\r\n";
+		SigProcUtils::appendFloat(*buf,m_arfcns[i].m_inPower,0) += "\r\n";
 		bool str = true;
 		bool hex = false;
 		m_arfcns[i].m_inBits.dump(*buf,name + "_bits",&str,&hex,0);
 	}
 	*buf << s_extraInputParams;
 	o = o->append(buf);
-	// Laurent approximation
-	if (m_checkPoint >= LaurentPA) {
-		buf = createSectPoint(LaurentPA);
-		m_laurentPA.dump(*buf,"data");
-		o = o->append(buf);
-	}
-	// Laurent freq shifting
-	if (m_checkPoint >= LaurentFS) {
-		buf = createSectPoint(LaurentFS);
-		m_laurentFS.dump(*buf,"data");
-		o = o->append(buf);
-	}
-	// ARFCNs data
-	if (m_checkPoint >= ARFCNv) {
-		for (unsigned int i = 0; i < m_arfcnCount; i++) {
-			TestARFCN& a = m_arfcns[i];
-			buf = new String;
-			*buf << "\r\n[" << a << "]\r\n";
-			if (!a.m_filler) {
-				if (i < m_failedArfcn || m_checkPoint >= ARFCNv)
-					a.m_v.dump(*buf,pointLabel(ARFCNv));
-				if (i < m_failedArfcn || m_checkPoint >= ARFCNw)
-					a.m_w.dump(*buf,pointLabel(ARFCNw));
-				if (i < m_failedArfcn || m_checkPoint >= ARFCNx)
-					a.m_x.dump(*buf,pointLabel(ARFCNx));
-			}
-			if (i < m_failedArfcn || m_checkPoint >= ARFCNs)
-				a.m_s.dump(*buf,pointLabel(ARFCNs));
+	// Dump data
+	if (s_dumpStr || s_dumpHex) {
+		// Laurent approximation
+		if (m_checkPoint >= LaurentPA) {
+			buf = createSectPoint(LaurentPA);
+			m_laurentPA.dump(*buf,"data");
 			o = o->append(buf);
-			if (i == m_failedArfcn)
-				break;
 		}
-	}
-	// Freq shifted result
-	if (m_checkPoint >= FreqShift) {
-		buf = createSectPoint(FreqShift);
-		m_y.dump(*buf,"data");
-		o = o->append(buf);
+		// Laurent freq shifting
+		if (m_checkPoint >= LaurentFS) {
+			buf = createSectPoint(LaurentFS);
+			m_laurentFS.dump(*buf,"data");
+			o = o->append(buf);
+		}
+		// ARFCNs data
+		if (m_checkPoint >= ARFCNv) {
+			for (unsigned int i = 0; i < m_arfcnCount; i++) {
+				TestARFCN& a = m_arfcns[i];
+				buf = new String;
+				*buf << "\r\n[" << a << "]\r\n";
+				if (!a.m_filler) {
+					if (i < m_failedArfcn || m_checkPoint >= ARFCNv)
+						a.m_v.dump(*buf,pointLabel(ARFCNv));
+					if (i < m_failedArfcn || m_checkPoint >= ARFCNw)
+						a.m_w.dump(*buf,pointLabel(ARFCNw));
+					if (i < m_failedArfcn || m_checkPoint >= ARFCNx)
+						a.m_x.dump(*buf,pointLabel(ARFCNx));
+				}
+				if (i < m_failedArfcn || m_checkPoint >= ARFCNs)
+					a.m_s.dump(*buf,pointLabel(ARFCNs));
+				o = o->append(buf);
+				if (i == m_failedArfcn)
+					break;
+			}
+		}
+		// Freq shifted result
+		if (m_checkPoint >= FreqShift) {
+			buf = createSectPoint(FreqShift);
+			m_y.dump(*buf,"data");
+			o = o->append(buf);
+		}
 	}
 	buf = new String;
 	*buf << "\r\n[result]\r\n";
@@ -707,14 +799,16 @@ extern "C" int main(int argc, const char** argv, const char** envp)
 {
 	::signal(SIGINT,sigHandler);
 	::signal(SIGTERM,sigHandler);
-	Debugger::enableOutput(true);
+	Debugger::enableOutput(true,true);
 	TelEngine::debugLevel(DebugAll);
 	s_cfg = "testtx.conf";
 	s_cfg.load();
 	NamedList* general = s_cfg.createSection("general");
 	s_arfcns = (unsigned int)general->getIntValue("arfcns",4,1,4);
 	s_oversampling = (unsigned int)general->getIntValue("oversampling",8,1,8);
+	s_cmpSrc = lookup(general->getValue("compare","signalprocessing"),s_cmpName);
 	NamedList* out = s_cfg.createSection("output");
+	s_debug = out->getBoolValue("debug");
 	s_dumpHex = out->getBoolValue("dump_hex");
 	s_dumpStr = out->getBoolValue("dump_str",true);
 	s_confFileStyle = out->getBoolValue("conf_file_style",true);
@@ -730,6 +824,7 @@ extern "C" int main(int argc, const char** argv, const char** envp)
 			s_lineLen = 1000;
 		s_lineLen -= s_lineDec;
 	}
+	s_signalProcessing.initialize(s_oversampling,s_arfcns);
 	s_code = 0;
 	BuildTx tx;
 	if (!tx.test())

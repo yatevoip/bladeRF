@@ -27,9 +27,19 @@
 
 using namespace TelEngine;
 
-static inline unsigned int sigProcMin(unsigned int v1, unsigned int v2)
+// Laurent Pulse Approximation default table
+static const float s_laurentPADef[] = {
+    0.00121, 0.00469, 0.01285, 0.02933, 0.05858, 0.10498, 0.17141, 0.25819,
+    0.36235, 0.47770, 0.59551, 0.70589, 0.79973, 0.87026, 0.91361, 0.92818,
+    0.91361, 0.87026, 0.79973, 0.70589, 0.59551, 0.47770, 0.36235, 0.25819,
+    0.17141, 0.10498, 0.05858, 0.02933, 0.01285, 0.00469, 0.00121
+};
+
+static inline unsigned int sigProcIters(unsigned int len, unsigned int step)
 {
-    return (v1 <= v2) ? v1 : v2;
+    if (step < 2)
+	return len;
+    return (len + (step - 1)) / step;
 }
 
 static inline unsigned int safeStrLen(const char* str)
@@ -52,30 +62,6 @@ void Complex::dump(String& dest) const
     dest.append(a,ret);
 }
 
-// Multiply two complex arrays
-void Complex::multiply(Complex* dest, unsigned int len,
-    const Complex* c1, unsigned int len1, const Complex* c2, unsigned int len2)
-{
-    for (unsigned int n = sigProcMin(len,sigProcMin(len1,len2)); n; n--)
-	multiply(*dest++,*c1++,*c2++);
-}
-
-// Compute the sum of two complex arrays
-void Complex::sum(Complex* dest, unsigned int len,
-    const Complex* c1, unsigned int len1, const Complex* c2, unsigned int len2)
-{
-    for (unsigned int n = sigProcMin(len,sigProcMin(len1,len2)); n; n--)
-	sum(*dest++,*c1++,*c2++);
-}
-
-// Compute the difference of two complex arrays
-void Complex::diff(Complex* dest, unsigned int len,
-    const Complex* c1, unsigned int len1, const Complex* c2, unsigned int len2)
-{
-    for (unsigned int n = sigProcMin(len,sigProcMin(len1,len2)); n; n--)
-	diff(*dest++,*c1++,*c2++);
-}
-
 // Compute the sum of product between complex number and its conjugate
 //  of all numbers in an array
 float Complex::sumMulConj(const Complex* data, unsigned int len)
@@ -88,26 +74,6 @@ float Complex::sumMulConj(const Complex* data, unsigned int len)
     return val;
 }
 
-// Compute the sum of product between 2 complex arrays
-// E.g. dest = SUM(c1[i] * c2[i])
-void Complex::sumMul(Complex& dest, const Complex* c1, unsigned int len1,
-    const Complex* c2, unsigned int len2)
-{
-    if (!(c1 && c2))
-	return;
-    for (unsigned int n = sigProcMin(len1,len2); n; n--)
-	sumMul(dest,*c1++,*c2++);
-}
-
-// Replace each element in an array with its conjugate
-void Complex::conj(Complex* c, unsigned int len)
-{
-    if (!c)
-	return;
-    for (; len; len--)
-	c->imag(-c->imag());
-}
-
 // Set complex elements from 16 bit integers array (pairs of real/imaginary parts)
 void Complex::setInt16(Complex* dest, unsigned int len, const int16_t* src, unsigned int n,
     unsigned int offs)
@@ -115,7 +81,7 @@ void Complex::setInt16(Complex* dest, unsigned int len, const int16_t* src, unsi
     if (!(dest && len && src && n) || offs >= len)
 	return;
     unsigned int room = len - offs;
-    unsigned int full = sigProcMin(room,n / 2);
+    unsigned int full = SigProcUtils::min(room,n / 2);
     bool rest = (full < room && (n % 2) != 0);
     for (dest += offs; full; full--, src += 2, dest++)
 	dest->set((float)*src,(float)src[1]);
@@ -140,163 +106,187 @@ void Complex::dump(String& dest, const Complex* c, unsigned int len, const char*
 //
 // SignalProcessing
 //
-SignalProcessing::~SignalProcessing()
+SignalProcessing::SignalProcessing()
+    : m_oversample(0),
+    m_gsmSlotLen(0),
+    m_rampOffset(0),
+    m_rampTrailIdx(0)
 {
-    delete[] m_sinusoids;
+    setOversample(1);
 }
 
-void SignalProcessing::initialize(unsigned int oversample, unsigned int arfcns)
+void SignalProcessing::initialize(unsigned int oversample, unsigned int arfcns,
+    LaurentPATable lpaTbl)
 {
-    m_oversample = oversample;
-    m_arfcns = arfcns;
-    fillFrequencyShift(&m_freqencyShift,m_oversample);
-    fillLaurentPulseAproximation(&m_laurentPulseAproximation,m_oversample);
-    buildSinusoids();
+    setOversample(oversample);
+    generateLaurentPulseAproximation(m_laurentPA,lpaTbl,m_oversample);
+    generateARFCNsFreqShift(m_arfcnFS,arfcns,m_oversample);
 }
 
-void SignalProcessing::fillFrequencyShift(ComplexArray* out, unsigned int oversample)
+void SignalProcessing::modulate(ComplexVector& out, const uint8_t* b, unsigned int len,
+    FloatVector* tmpV, ComplexVector* tmpW) const
 {
-    if (!out)
+    static const float s_real[] = {1.0F, 0.0F, -1.0F, 0.0F};
+    static const float s_imag[] = {0.0F, 1.0F, 0.0F, -1.0F};
+    FloatVector localV;
+    ComplexVector localW;
+
+    if (!(b && len)) {
+	out.resize(m_gsmSlotLen,true);
 	return;
-    out->assign((int)BITS_PER_TIMESLOT);
-    for (unsigned int i = 0; i < out->length(); i++) {
-	// s[i] = e^(-jnPI/2S)
-	// Set n*PI/2* oversample as the imaginary part of a complex number
-	// Calculate the exponetial of that number
-	//Complex::exp((*out)[i],0,-(float)i * PI / (2 * oversample));
-	switch (i % 4) {
-	    case 0:
-		(*out)[i].set(1,0);
-		break;
-	    case 1:
-		(*out)[i].set(0,1);
-		break;
-	    case 2:
-		(*out)[i].set(-1,0);
-		break;
-	    case 3:
-		(*out)[i].set(0,-1);
-		break;
-	}
     }
-#ifdef DUMP_COMPLEX
-    String outDump;
-    out->dump(outDump);
-    Debug(DebugAll,"SignalProcessing::buildFrequencyShift(%u) generated: %s",
-	  oversample,outDump.c_str());
-#endif
+    if (!tmpV)
+	tmpV = &localV;
+    if (!tmpW)
+	tmpW = &localW;
+
+    // Calculate v: v[n] = 2 * buf[n] - 1
+    // David Burgess: Note the shift to allow for power ramp shaping
+    tmpV->resize(m_gsmSlotLen,true);
+    float* v = tmpV->data() + m_rampOffset;
+    unsigned int n = sigProcIters(m_gsmSlotLen - m_rampOffset,m_oversample);
+    for (; len && n; --len, --n, ++b, v += m_oversample)
+	*v = 2.0F * *b - 1.0F;
+    v = tmpV->data();
+    // David Burgess's comment:
+    //   The spec for power ramping is GSM 05.05 Annex B.
+    //   The signal must start down-ramp within 10 us (2.7 symbols), down at least 6 dB.
+    //   The signal falls at least 30 dB within 18 us (4.9 symbols); 6 dB per symbol.
+    //   -6 dB is amplitude factor of 0.5.
+    if (m_rampOffset) {
+	// Power ramping - leading edge.
+	v[m_rampOffset - m_oversample] = v[m_rampOffset] * 0.5F;
+	// Power ramping - trailing edge
+	v[m_rampTrailIdx] = v[m_rampTrailIdx - m_oversample] * 0.5F;
+    }
+
+    // Calculate w: w[n] = v[n] * s[n]
+    // We exploit the fact that most of the values in v[] and w[] are zero.
+    tmpW->resize(m_gsmSlotLen + m_laurentPA.length(),true);
+    Complex* w = tmpW->data() + m_laurentPA.length() / 2;
+    n = sigProcIters(m_gsmSlotLen,m_oversample);
+    unsigned int idx = 0;
+    for (; n; --n, idx = (idx + 1) % 4, w += m_oversample, v += m_oversample)
+	w->set(*v * s_real[idx],*v * s_imag[idx]);
+
+    // Calculate the convolution
+    convolution(out,*tmpW,m_laurentPA);
 }
 
-void SignalProcessing::fillLaurentPulseAproximation(ComplexArray* out, unsigned int oversample)
+// Calculate the convolution of 2 vectors
+// out[n] = SUM(i=0..Lp)(f[n + i] * g[Lp - 1 - i])
+// Where Lp is the g vector length
+// We assume the 'f' vector is padded with Lp/2 0 values (leading and trailing)
+void SignalProcessing::convolution(ComplexVector& out, const ComplexVector& fVect,
+    const FloatVector& gVect)
 {
-    if (!out)
+    if (!gVect.length() || fVect.length() < gVect.length()) {
+	out.resize(fVect.length(),true);
 	return;
-    out->assign(3 * oversample);
-    float halfLength = out->length() / 2;
-    float sampled = 0.96 / oversample;
-    for (int i = 0; i < (int)out->length(); i++) {
-	float f = (i - halfLength) / oversample;
-	f *= f;
-	float g = -1.138 * f - 0.527 * f * f;
-	(*out)[i] = sampled * ::expf(g);
     }
-#ifdef DUMP_COMPLEX
-    String outDump;
-    out->dump(outDump);
-    Debug(DebugAll,"SignalProcessing::buildLaurentPulseAproximation(%u) generated: %s",
-	oversample,outDump.c_str());
-#endif
-}
-
-ComplexArray* SignalProcessing::getConvolution(const ComplexArray& x,
-    const ComplexArray& h)
-{
-#ifdef DUMP_COMPLEX
-    String xDump,hDump;
-    x.dump(xDump);
-    Debug(DebugAll,"SignalProcessing::getConvolution x: %s, ",xDump.c_str());
-    h.dump(hDump);
-    Debug(DebugAll,"SignalProcessing::getConvolution h: %s",hDump.c_str());
-#endif
-
-    if (x.length() <= h.length()) {
-	Debug(DebugWarn,"Invallid getConvolution input arguments! x size: %d, h size %d",
-	    x.length(),h.length());
-	return 0;
-    }
-    ComplexArray* ret = new ComplexArray(x.length());
-    /**
-     * Math formula: y[k] = SUM (i = 0 to n) from x[k+i]*h[n-i]
-     * Where: n = h.length() - 1
-     * The x index will go out of bounds at point x.length() - n
-     * So I had splitted the math in two: untill and after: x.length() - n
-     */
-    Complex tmp;
-    unsigned int endRef = h.length();
-    for (unsigned int i = 0;i < x.length() - endRef + 1;i++) {
-	for (unsigned int j = 0;j < endRef - 1;j++) {
-	    Complex::multiply(tmp,x[i + j],h[endRef - j - 1]);
-	    (*ret)[i] += tmp;
+    out.resize(fVect.length() - gVect.length());
+    Complex* x = out.data();
+    unsigned int Lp_1 = gVect.length() - 1;
+    const Complex* parseF = fVect.data();
+    const float* gLast = gVect.data() + Lp_1;
+    for (unsigned int n = out.length(); n; --n, ++x, ++parseF) {
+	const Complex* f = parseF;
+	const float* g = gLast;
+	// We don't reset the destination vector (it might contain old data)
+	// For the first index just set the product in destination
+	Complex::multiplyF(*x,*f,*g);
+	// Multiply the remaining
+	for (unsigned int conv = Lp_1; conv; --conv) {
+	    ++f;
+	    --g;
+	    Complex::sumMulF(*x,*f,*g);
 	}
     }
-
-    for (unsigned int i = x.length() - endRef + 1;i < x.length();i++) {
-	for (unsigned int j = 0;j < x.length() - i;j++) {
-	    Complex::multiply(tmp,x[i + j],h[endRef - j - 1]);
-	    (*ret)[i] += tmp;
-	}
-    }
-    
-#ifdef DUMP_COMPLEX
-    String outDump;
-    ret->dump(outDump);
-    Debug(DebugAll,"SignalProcessing::getConvolution returning: %s",outDump.c_str());
-#endif
-    return ret;
 }
 
-ComplexArray* SignalProcessing::modulate(unsigned char* inData,
-	unsigned int inDataLength, unsigned int oversample, const ComplexArray* frequencyShift,
-	const ComplexArray* laurentPulseAproximation)
+// Sum the ARFCN frequency shift vectors
+// out[n] = SUM(i=0..k)(m_arfcnFS[i][n])
+void SignalProcessing::sumFreqShift(ComplexVector& out, unsigned int arfcnMask) const
 {
-    if (!inData || inDataLength == 0 || !laurentPulseAproximation || !frequencyShift) {
-	Debug(DebugStub,"SignalProcessing::modulate received invalid data! [%p] %u [%p] [%p]",
-	      inData,inDataLength,laurentPulseAproximation,frequencyShift);
-	return 0;
+    if (!m_arfcnFS.length()) {
+	out.clear();
+	return;
     }
-	
+    bool first = true;
+    for (unsigned int i = 1; i < m_arfcnFS.length(); ++i, arfcnMask >>= 1)
+	if ((arfcnMask & 0x01) != 0)
+	    sum(out,m_arfcnFS[i],first);
+    if (first)
+	out.resize(m_arfcnFS[0].length(),true);
+}
+
+void SignalProcessing::generateLaurentPulseAproximation(FloatVector& out,
+    LaurentPATable lpaTbl, unsigned int oversample)
+{
+    if (lpaTbl == LaurentPADef)
+	out.assign(s_laurentPADef,sizeof(s_laurentPADef) / sizeof(float));
+    else {
+	Debug(DebugStub,
+	    "SignalProcessing::generateLaurentPulseAproximation() not tested for tbl=%d oversample=%u",
+	    lpaTbl,oversample);
+	unsigned int K = oversample ? oversample : 1;
+	out.resize(4 * K);
+	float* d = out.data();
+	float halfLen = (float)out.length() / 2;
+	float sampled = 0.96 / K;
+	for (unsigned int n = 0; n < out.length(); n++) {
+	    float f = ((float)n - halfLen) / K;
+	    float f2 = f * f;
+	    float g = -1.138 * f2 - 0.527 * f2 * f2;
+	    *d++ = sampled * ::expf(g);
+	}
+    }
 #ifdef XDEBUG
-    String inDump;
-    inDump.hexify(inData,inDataLength,' ');
-    Debug(DebugAll,"SignalProcessing::modulate( oversample %u, data: %s)",
-	oversample,inDump.c_str());
+    String s;
+    out.dump(s,SigProcUtils::appendFloat);
+    Debug(DebugAll,
+	"SignalProcessing::generateLaurentPulseAproximation(%d,%u) len=%u data: %s",
+	lpaTbl,oversample,out.length(),s.c_str());
 #endif
-    ComplexArray modulated(BITS_PER_TIMESLOT * oversample);
-    unsigned int parseSize = inDataLength * oversample;
-    if (parseSize > modulated.length())
-	parseSize = modulated.length();
-
-    for (unsigned int i = 0; i < parseSize; i++)
-	Complex::multiplyF(modulated[i],(*frequencyShift)[i / oversample],inData[i / oversample] ? 1.0 : -1.0);
-
-    // Fill the leftover data with 0.01
-    // power ramp requirement
-    for (unsigned int i = parseSize;i < modulated.length();i++)
-	modulated[i].set(0.01,0);
-
-    // Convolve the obtained array with Laurent pulse approximation array
-    return getConvolution(modulated,*laurentPulseAproximation);
 }
 
-const ComplexArray* SignalProcessing::getSinusoid(unsigned int arfcn) const
+// Generate GMSK frequency shifting vector
+static void generateGMSKFreqShift(ComplexVector& out, float omega)
 {
-    if (arfcn > m_arfcns)
-	return 0;
-    if (!m_sinusoids) {
-	Debug(DebugStub,"SignalProcessing::initialize() not called!");
-	return 0;
+    Complex* s = out.data();
+    float phi = 0;
+    for (unsigned int n = out.length(); n; --n, ++s) {
+	s->set(::cosf(phi),::sinf(phi));
+	phi += omega;
+	if (phi > PI2)
+	    phi -= PI2;
     }
-    return &m_sinusoids[arfcn];
+}
+
+// Generate ARFCNs frequency shifting vectors
+// fk = (4 * k - 6)(100 * 10^3)
+// omegaK = (2 * PI * fk) / Fs
+// s[n] = e ^ (-j * n * omegaK)
+void SignalProcessing::generateARFCNsFreqShift(ComplexVectorVector& out,
+    unsigned int arfcns, unsigned int oversample)
+{
+    unsigned int K = oversample ? oversample : 1;
+    unsigned int Ls = gsmSlotLen(K);
+    float Fs = GSM_SYMBOL_RATE * K;
+    out.resize(arfcns);
+    for (unsigned int i = 0; i < out.length(); ++i) {
+	out[i].resize(Ls);
+	float fk = (4 * (float)i - 6) * 1e5;
+	float omega = (PI2 * fk) / Fs;
+	generateGMSKFreqShift(out[i],omega);
+#ifdef XDEBUG
+	String s;
+	out[i].dump(s,SigProcUtils::appendComplex);
+	Debug(DebugAll,
+	    "SignalProcessing::generateARFCNsFreqShift(%u) ARFCN=%u len=%u data: %s",
+	    oversample,i,out[i].length(),s.c_str());
+#endif
+    }
 }
 
 // Generate frequency shifting vector
@@ -326,19 +316,32 @@ float SignalProcessing::computePower(const float* data, unsigned int len,
     return param * val;
 }
 
-void SignalProcessing::buildSinusoids()
+// Init oversampling rate and related data
+void SignalProcessing::setOversample(unsigned int oversample)
 {
-    if (m_sinusoids)
-	delete[] m_sinusoids;
-    m_sinusoids = new ComplexArray[m_arfcns];
-
-    unsigned int outLen = BITS_PER_TIMESLOT * m_oversample;
-    for (int i = 0;i < (int)m_arfcns;i++) {
-	float exp = -2.0F * PI * ((float)((4.0F * i - 6.0F) * 100000.0F) / ((float)m_oversample * GSM_SYMBOL_RATE));
-	m_sinusoids[i].assign(outLen);
-	for (unsigned int j = 0;j < outLen;j++) {
-	    Complex::exp(m_sinusoids[i][j],0,-exp*j);
-	}
+    m_oversample = oversample ? oversample : 1;
+    m_gsmSlotLen = gsmSlotLen(m_oversample);
+    // Calculate power ramping 
+    // Make sure the indexes are not out of range
+    // Disable power ramping if so
+    m_rampOffset = 4 * m_oversample;
+    unsigned int* wrong = 0;
+    if (m_rampOffset < m_gsmSlotLen) {
+	// Power ramping - trailing edge
+	// v[m_rampTrailIdx] = v[m_rampTrailIdx - m_oversample]
+	m_rampTrailIdx = 147 * m_oversample + m_rampOffset + m_oversample;
+	if (m_rampTrailIdx >= m_gsmSlotLen)
+	    wrong = &m_rampTrailIdx;
+    }
+    else
+	wrong = &m_rampOffset;
+    if (wrong) {
+	Debug(DebugFail,
+	    "SignalProcessing oversample=%u: power ramping %s %u is out of range",
+	    m_oversample,((wrong == &m_rampOffset) ? "offset" : "trailing index"),
+	    *wrong);
+	m_rampOffset = 0;
+	m_rampTrailIdx = 0;
     }
 }
 
@@ -352,7 +355,7 @@ unsigned int SigProcUtils::copy(void* dest, unsigned int len, const void* src,
 {
     if (!(dest && src && n && objSize) || offs >= len)
 	return 0;
-    n = sigProcMin(n,len - offs);
+    n = min(n,len - offs);
     ::memcpy(((uint8_t*)dest) + offs * objSize,src,n * objSize);
     return n;
 }
@@ -363,7 +366,7 @@ unsigned int SigProcUtils::bzero(void* buf, unsigned int len,
 {
     if (!(buf && len && objSize) || offs >= len)
 	return 0;
-    len = sigProcMin(len,len - offs);
+    len = min(len,len - offs);
     ::memset(((uint8_t*)buf) + offs * objSize,0,len * objSize);
     return len;
 }
@@ -390,7 +393,7 @@ String& SigProcUtils::appendSplit(String& buf, const String& str, unsigned int l
     }
     unsigned int firstLineLen = 0;
     if (offset && offset < lineLen) {
-	firstLineLen = sigProcMin(len,lineLen - offset);
+	firstLineLen = min(len,lineLen - offset);
 	len -= firstLineLen;
 	// Nothing to be added after first line ?
 	if (!len) {
@@ -421,6 +424,22 @@ String& SigProcUtils::appendSplit(String& buf, const String& str, unsigned int l
     buf << tmpBuf;
     delete[] tmpBuf;
     return buf;
+}
+
+// Append float value to a String (using %g format)
+String& SigProcUtils::appendFloat(String& dest, const float& val, const char* sep)
+{
+    char s[80];
+    sprintf(s,"%g",val);
+    return dest.append(s,sep);
+}
+
+// Append a Complex number to a String (using "%g%+gi" format)
+String& SigProcUtils::appendComplex(String& dest, const Complex& val, const char* sep)
+{
+    char s[170];
+    sprintf(s,"%g%+gi",val.real(),val.imag());
+    return dest.append(s,sep);
 }
 
 /* vi: set ts=8 sw=4 sts=4 noet: */

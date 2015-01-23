@@ -48,7 +48,7 @@ public:
      * @param data the data to be sent.
      * @return True if data was sent.
      */
-    virtual bool sendData(const ComplexArray& data);
+    virtual bool sendData(const ComplexVector& data);
 
     /**
      * Set Rx/Tx frequency

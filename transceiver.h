@@ -33,6 +33,7 @@ class TransceiverObj;                    // A tranceiver related object
 class TransceiverSockIface;              // Transceiver socket interface
 class Transceiver;                       // A transceiver
 class TransceiverQMF;                    // A QMF transceiver
+class TxFillerTable;                     // A transmit filler table
 class ARFCN;                             // A transceiver ARFCN
 class ARFCNSocket;                       // A transceiver ARFCN with socket interface
 class RadioRxData;                       // Radio read data
@@ -40,7 +41,6 @@ class RadioErrors;                       // A radio interface error counter
 class RadioIOData;                       // Radio Rx/Tx buffer and related data
 class RadioIface;                        // Transceiver radio interface
 class TransceiverWorker;                 // Private worker thread
-class TrxDump;                           // Tranceiver data dumper
 
 /**
  * This class implements a generic queue
@@ -385,21 +385,6 @@ public:
     virtual void runRadioDataProcess();
 
     /**
-     * Add a Tx Burst to the filler table
-     * @param burst The burst to be added.
-     * Note: The filler table will own the burst
-     */
-    void addFillerBurst(GSMTxBurst* burst);
-
-    /**
-     * Get a burst from the filler table
-     * @param arfcn The arfcn number of the filler burst
-     * @param time The time of the filler burst
-     * @return 0 if no filler burst is stored for the given arfcn and time.
-     */
-    GSMTxBurst* getFiller(unsigned int arfcn, const GSMTime& time);
-
-    /**
      * Extract the bursts for sending.
      * Sum them for each ARFCN and send them to the radio interface.
      * @param time The time of the burst that needs to be sent.
@@ -429,7 +414,7 @@ public:
      * Get the SignallProcessing instance used by this tranceiver
      * @return Reference to SignallProcessing instance
      */
-    const SignalProcessing& signalProcessing() const
+    inline const SignalProcessing& signalProcessing() const
 	{ return m_signalProcessing; }
 
     /**
@@ -517,19 +502,6 @@ public:
     virtual void destruct();
 
     /**
-     * Retrieve the data dumper of this transceiver
-     * @return TrxDump pointer, 0 if not set
-     */
-    inline TrxDump* dumper() const
-	{ return m_dump; }
-
-    /**
-     * Set the data dumper of this transceiver if not already set
-     * @param dump Data dumper to set (it will be consumed)
-     */
-    void dumper(TrxDump* dump);
-
-    /**
      * Retrieve the state name dictionary
      * @return State name dictionary
      */
@@ -585,9 +557,7 @@ protected:
     GSMTime m_nextClockUpdTime;          // Next clock update time
     GSMTime m_txTime;                    // Transmit time
     GSMTime m_txLatency;                 // Transmit latency
-    GSMTxBurst** m_fillers;              // Table of filler bursts
-    GSMTxBurst* m_dummyTxBurst;          // Dummy TX burst
-    unsigned int m_fillerMaxFrames;      // Maximum number of frames that the filler table should keep
+    ComplexVector m_sendBurstBuf;        // Send burst buffer
     SignalProcessing m_signalProcessing; // SignalProcessing class initialized for this tranceiver
     unsigned int m_tsc;                  // GSM TSC index
     double m_rxFreq;                     // Rx frequency
@@ -596,7 +566,7 @@ protected:
     int m_txPower;                       // Tx power level (in dB)
     int m_txAttnOffset;                  // Tx power level attenuation
     // Test data
-    int m_alterSend;                     // Flags mask used to send test data.
+    unsigned int m_sendArfcnFS;          // Flags mask used to send test data (send freq shift vectors)
     GSMTxBurst* m_txTestBurst;           // Test burst to be sent.
     Mutex m_testMutex;                   // Mutex used to block the access to test burst
     bool m_dumpOneTx;                    // Flag used to dump random Tx bursts
@@ -611,11 +581,9 @@ private:
     void changeState(int newState);
     // Initialize the ARFCNs list (set or release)
     bool resetARFCNs(unsigned int arfcns = 0, int port = 0,
-	const String* rAddr = 0, const char* lAddr = 0);
+	const String* rAddr = 0, const char* lAddr = 0, unsigned int nFillers = 0);
     // Stop all ARFCNs
     void stopARFCNs();
-    // Clear filler tables
-    void clearFillers();
     // Sync upper layer GSM clock (update time)
     bool syncGSMTime();
     // Handle (NO)HANDOVER commands. Return status code
@@ -637,7 +605,6 @@ private:
 
     bool m_error;                        // Fatal error occured
     bool m_exiting;                      // Stopping flag
-    TrxDump* m_dump;                     // Data dumper
 };
 
 
@@ -754,6 +721,70 @@ private:
 };
 
 
+typedef SigProcVector<GSMTxBurst*> GSMTxBurstPtrVector;
+
+/**
+ * This class implements a transmit filler table
+ * @short A transmit filler table
+ */
+class TxFillerTable
+{
+public:
+    /**
+     * Constructor
+     * Allocates 
+     */
+    inline TxFillerTable()
+	: m_filler(0)
+	{ init(1); }
+
+    /**
+     * Destructor
+     */
+    ~TxFillerTable()
+	{ clear(); }
+
+    /**
+     * Set filler at burst time
+     * @param burst The burst to set, it will be consumed
+     */
+    inline void set(GSMTxBurst* burst) {
+	    if (!burst)
+		return;
+	    GSMTxBurst** tmp = fillerHolder(burst->time());
+	    if (*tmp == burst)
+		return;
+	    if (*tmp != m_filler)
+		TelEngine::destruct(*tmp);
+	    *tmp = burst;
+	}
+
+    /**
+     * Get a burst from the filler table
+     * @param time The time of the filler burst
+     * @return 0 if no filler burst is stored for the given time
+     */
+    inline GSMTxBurst* get(const GSMTime& time)
+	{ return *(fillerHolder(time)); }
+
+    /**
+     * Initialize the filler table
+     * @param len Table length (it will be forced to minimum value if less than it)
+     * @param filler Filler burst. The table will take ownership of it
+     */
+    void init(unsigned int len, GSMTxBurst* filler = 0);
+
+private:
+    inline GSMTxBurst** fillerHolder(const GSMTime& time)
+	// We assume GSM time timeslot can't be greater then 7
+	{ return &(m_fillers[time.fn() % m_fillers.length()][time.tn()]); }
+    void clear();
+
+    GSMTxBurst* m_filler;                // Filler
+    SigProcVector<GSMTxBurstPtrVector,false> m_fillers; // Table of filler bursts
+};
+
+
 /**
  * This class implements a transceiver ARFCN
  * @short An ARFCN
@@ -831,15 +862,9 @@ public:
     void addBurst(GSMTxBurst* burst);
 
     /**
-     * Extract expired bursts from this ARFQN's queue.
-     * @param dest The destination list to be filled with expired bursts.
-     * @param time Time base for expire calculation.
-     */
-    void extractExpired(ObjList& dest, const GSMTime& time);
-
-    /**
-     * Obtain the burst that has to be sent at the specified time.
-     * @param time The burst time.
+     * Obtain the burst that has to be sent at the specified time
+     * @param time The burst time
+     * @return GSMTxBurst pointer or 0
      */
     GSMTxBurst* getBurst(const GSMTime& time);
 
@@ -894,6 +919,13 @@ public:
 	{ return lookup(t,burstTypeName()); }
 
 protected:
+    /**
+     * Move expired and filler bursts filler table
+     * @param time Time base for expire calculation
+     * @param warnExpired True to put a debug message if there are expired bursts
+     */
+    void moveBurstsToFillers(const GSMTime& time, bool warnExpired);
+
     /**
      * Initialize a timeslot and related data
      * @param slot Timeslot number
@@ -963,6 +995,7 @@ private:
     static int burstTypeCheckFN(int chanType, unsigned int fn);
 
     unsigned int m_arfcn;                // ARFCN
+    TxFillerTable m_fillerTable;         // Fillers table
     Mutex m_txMutex;                     // Transmit queue blocker
     ObjList m_txQueue;                   // Transmit queue
     ObjList m_expired;                   // List of expired bursts
@@ -1367,7 +1400,7 @@ public:
      * @param data the data to be sent
      * @return True if data was sent, false on fatal error
      */
-    virtual bool sendData(const ComplexArray& data);
+    virtual bool sendData(const ComplexVector& data);
 
     /**
      * Get the radio clock
@@ -1540,63 +1573,6 @@ private:
     bool m_loopback;                     // Loopback mode flag
     int m_loopbackSleep;                 // Time to sleep between two consecutive bursts sent in loopback mode
     u_int64_t m_loopbackNextSend;        // Next time to send a loopback burst
-};
-
-
-/**
- * This class implements transceiver data dump
- * @short Tranceiver data dumper
- */
-class TrxDump : public GenObject
-{
-public:
-    /**
-     * Dump location enumeration
-     */
-    enum Location {
-	TrxConfig = 0x00000001,          // Dump transceiver config
-	ArfcnTxBurst = 0x00010000,       // Dump TX burst as received by an ARFCN
-	                                 //  data: ????
-	ArfcnTxFreqShifted = 0x00020000, // Dump TX bursts after frequency shifted
-	                                 //  data: ComplexVector
-	// Masks
-	AllTx = ArfcnTxBurst | ArfcnTxFreqShifted,
-    };
-
-    /**
-     * Constructor
-     * @param loc Locations to dump (default to all)
-     * @param funcDumpFloat Optional pointer to function used to dump float numbers
-     * @param funcDumpComplex Optional pointer to function used to dump Complex numbers
-     */
-    TrxDump(uint32_t loc = 0xffffffff,
-	String& (*funcDumpFloat)(String& dest, const float& item, const char* sep) = 0,
-	String& (*funcDumpComplex)(String& dest, const Complex& item, const char* sep) = 0);
-
-    /**
-     * Retrieve location label
-     * @return Location label
-     */
-    inline const char* locLabel(int loc) const
-	{ return lookup(loc,m_locLabel); }
-
-    /**
-     * Dump TX data.
-     * The default implementation dumps it to output
-     * @param loc Location to dump
-     * @param data Data to dump
-     * @param arfcn Optional ARFCN (required for ARFCN related locations)
-     */
-    virtual void dumpTx(uint32_t loc, const void* data, ARFCN* arfcn = 0);
-
-protected:
-    uint32_t m_location;                 // Locations to dump (defaults to all)
-    Mutex m_mutex;                       // Protect changes
-    const TokenDict* m_locLabel;         // Location labels
-
-private:
-    String& (*m_funcDumpFloat)(String&,const float&,const char*);
-    String& (*m_funcDumpComplex)(String&,const Complex&,const char*);
 };
 
 }; // namespace TelEngine

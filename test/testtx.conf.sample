@@ -24,6 +24,12 @@ arfcn1=filler
 arfcn2=filler
 arfcn3=filler
 
+; compare: string: Compare data source
+; Values:
+;  config: Expect compare data to be in the configuration file
+;  signalprocessing: Call signal processing methods to generate data (default)
+;compare=signalprocessing
+
 
 [output]
 ; This section configures the output
