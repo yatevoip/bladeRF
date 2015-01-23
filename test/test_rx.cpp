@@ -87,7 +87,7 @@ unsigned int s_image2Gain = 0;
 unsigned int s_image2Phase = 0;
 unsigned int s_maxPropDelay = 63;
 float s_powerMin = 1.0;
-#define FLOATABS 20e-6
+#define FLOATABS 20e-4
 
 static float s_qmfFrequencyShiftParameter[] = {
 	PI / 2,              // 0
@@ -458,11 +458,14 @@ static void qmf(QmfBlock* q, ComplexArray& dataIn)
 	// Calculate w
 	ComplexArray paddedXP(inLen + s_hqLength);
 	for (unsigned int i = 0;i < inLen;i++)
-	paddedXP[i + s_n0] = xp[i];
+	    paddedXP[i + s_n0] = xp[i];
+
+
 	ComplexArray w(inLen);
-	for (unsigned int i = 0;i < w.length();i++) {
-		for (int j = 0;j < s_n0;j++)
-			w[i] += paddedXP[i + 2 * j] * s_hq[2 * j];
+	for (unsigned int i = 0;i < w.length();i+=2) {
+		for (int j = 0;j < s_hqLength;j+=2) {
+			w[i] += paddedXP[i + j] * s_hq[j];
+		}
 	}
 
 	if (q->m_w)
@@ -470,7 +473,7 @@ static void qmf(QmfBlock* q, ComplexArray& dataIn)
 
 	// Calculate low
 	q->m_lowData.assign(w.length() / 2);
-	for (unsigned int i = 0;i < w.length() - s_n0;i += 2) {
+	for (unsigned int i = 0;i < w.length();i += 2) {
 		q->m_lowData[i / 2] = xp[i] + w[i];
 		q->m_lowData[i/2] = q->m_lowData[i/2] * 0.5F;
 	}
@@ -478,7 +481,7 @@ static void qmf(QmfBlock* q, ComplexArray& dataIn)
 	
 	// Calculate High
 	q->m_highData.assign(w.length() / 2);
-	for (unsigned int i = 0;i < w.length() - s_n0;i+= 2) {
+	for (unsigned int i = 0;i < w.length();i+= 2) {
 		Complex::diff(q->m_highData[i / 2], xp[i], w[i]);
 		q->m_highData[i/2] = q->m_highData[i/2] * 0.5F;
 	}
@@ -563,8 +566,6 @@ ComplexArray* correlate(ComplexArray& in, FloatVector& h)
 			Complex::multiplyF(c,padded[i + j],h[j]);
 			
 			(*out)[i] += c;
-			//Debug(DebugAll, " i %d j %d padded [%d] ( %g %g) h[%d] %f  out[i] = (%g % g)",
-			 // i,j,i+j,padded[i + j].real(),padded[i + j].imag(),j,h[j],(*out)[i].real(),(*out)[i].imag());
 		}
 	}
 	return out;
@@ -590,6 +591,35 @@ ComplexArray* correlate(ComplexArray& in, ComplexArray& h)
 		}
 	}
 	return out;
+}
+
+
+void demodcheck(ComplexArray& in, String name, Configuration& cfg,int arfcnIndex)
+{
+	String arfcnPrefix(arfcnIndex);
+	arfcnPrefix << ".";
+	NamedList* dhe = cfg.getSection(name);
+	while (dhe) {
+		DataComparator* cHe = getDC(name,arfcnPrefix,*dhe);
+		if (cHe)
+			cHe->dump(in);
+		TelEngine::destruct(cHe);
+		break;
+	}   
+}
+
+void demodcheck(FloatVector& in, String name, Configuration& cfg,int arfcnIndex)
+{
+	String arfcnPrefix(arfcnIndex);
+	arfcnPrefix << ".";
+	NamedList* dhe = cfg.getSection(name);
+	while (dhe) {
+		DataComparator* cHe = getDC(name,arfcnPrefix,*dhe);
+		if (cHe)
+			cHe->dump(in);
+		TelEngine::destruct(cHe);
+		break;
+	}   
 }
 
 
@@ -658,6 +688,10 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 			sm[i] = *s ? scv : -scv;
 
 		// Note: Only the middle 11 samples actually need to be calculated in he.
+		
+		demodcheck(x, "correlate-in1", cfg,arfcnIndex);
+		demodcheck(sm, "correlate-in2", cfg,arfcnIndex);
+		
 		he = correlate(x,sm);
 		center = (he->length()/2)-1;
 
@@ -666,7 +700,7 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 		unsigned xlen = 41+s_maxPropDelay;
 		ComplexArray x(xlen);
 		int index = 0;
-		for (unsigned int i = 8; i < xlen;i++,index++)
+		for (unsigned int i = 8; i < xlen + 8;i++,index++)
 			x[index] = xf[i];
 		
 		// The actual extended training sequence is 41 symbols.
@@ -679,10 +713,13 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 		// The entire correlation is needed for initial delay estimation.
 		// Note that we zero-delay point ("center") is NOT centered in he.
 		// NOTE: This correlation accounts for the majority of CPU usage in an idle BTS.
+		demodcheck(x, "correlate-in1", cfg,arfcnIndex);
+		demodcheck(sm, "correlate-in2", cfg,arfcnIndex);
 		he = correlate(x,sm);
 		// TODO: *WHY* is 24 the value that works here?
 		center = 24;
 	}
+	demodcheck(*he, "correlate-out", cfg,arfcnIndex);
 
 	// At this point, he contains a channel estimate with the zero-delay point at "center".
 
@@ -736,8 +773,10 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 	ComplexArray xf2(xf.length());
 	for (int i=0; i<xf.length(); i++) {
 		int j = i + toaError;
-		if (j<0) continue;
-		if (j>=xf.length()) continue;
+		if (j<0) 
+		    continue;
+		if (j>=xf.length()) 
+		    continue;
 		xf2[i]=xf[j];
 	}
 
@@ -751,6 +790,15 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 		heTrim[i] = (*he)[j];
 	}
 
+	for (unsigned i=0; i<11; i++) {
+		heTrim[i] = (*he)[maxIndex-5+i];
+		int j = maxIndex - 5 + i;
+		if (j<0 || j>= (he->length())) 
+		    continue;
+		heTrim[i] = (*he)[j];
+	}
+	
+	
 	String arfcnPrefix(arfcnIndex);
 	arfcnPrefix << ".";
 	NamedList* dhe = cfg.getSection("demod-he");
@@ -912,19 +960,26 @@ extern "C" int main(int argc, const char** argv, const char** envp)
 	// And and add an optional multipath image at a level of imageGain/10.
 	float imagePhi = s_imagePhase * PI / 180.0F;
 	float image2Phi = s_image2Phase * PI / 180.0F;
+
 	Complex cImageGain;
 	cImageGain.real(s_imageGain * 0.1F * ::cosf(imagePhi));
 	cImageGain.imag(s_imageGain * 0.1F * ::sinf(imagePhi));
+
 	Complex cImage2Gain;
 	cImage2Gain.real(s_image2Gain * 0.1F * ::cosf(image2Phi));
 	cImage2Gain.imag(s_image2Gain * 0.1F * ::sinf(image2Phi));
+
 	for (int i = 0;i < indc->m_compare.length();i++) {
-		if ((i-(int)s_delay)>=0)
+/*		if ((i-(int)s_delay)>=0)
 			ind[i] = indc->m_compare[i-(int)s_delay];
+
 		if ((i-(int)s_delay-(int)s_imageDelay)>=0)
 			ind[i] += indc->m_compare[i-(int)s_delay-(int)s_imageDelay] * cImageGain;
+
 		if ((i-(int)s_delay-(int)s_image2Delay)>=0)
-			ind[i] += indc->m_compare[i-(int)s_delay-(int)s_image2Delay] * cImage2Gain;
+			ind[i] += indc->m_compare[i-(int)s_delay-(int)s_image2Delay] * cImage2Gain;*/
+	    //ind[i].set(indc->m_compare[i].real() / 2048,indc->m_compare[i].imag() / 2048);
+	    ind[i].set(indc->m_compare[i].real(),indc->m_compare[i].imag());
 	}
 
 	Debug(DebugAll,"Image delay %d samples, gain %f+%f",s_imageDelay,cImageGain.real(),cImageGain.imag());
@@ -933,6 +988,10 @@ extern "C" int main(int argc, const char** argv, const char** envp)
 	// Run the data trough qmf filter
 	qmf(s_qmfs[0],ind);
 	
+	if (!s_qmfs[7]->m_lowData.length()) {
+	    Debug(DebugWarn,"failed to apply QMF filter for Arfcn 0");
+	    return;
+	}
 	
 	demodulate(s_qmfs[7],s_cfg,0);
 	
