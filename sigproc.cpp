@@ -84,9 +84,9 @@ void Complex::setInt16(Complex* dest, unsigned int len, const int16_t* src, unsi
     unsigned int full = SigProcUtils::min(room,n / 2);
     bool rest = (full < room && (n % 2) != 0);
     for (dest += offs; full; full--, src += 2, dest++)
-	dest->set((float)*src,(float)src[1]);
+	dest->set((float)*src / 2047,(float)src[1] / 2047);
     if (rest)
-	dest->set((float)*src);
+	dest->set((float)*src / 2047);
 }
 
 
@@ -301,7 +301,7 @@ void SignalProcessing::setFreqShifting(ComplexVector* data, float val,
 	data->resize(setLen);
     Complex* d = data->data();
     for (unsigned int i = 0; i < data->length(); i++)
-	Complex::exp(*d++,0,-(float)i * val);
+	Complex::exp(*d++,0,(float)i * val);
 }
 
 // Compute the power level from Complex array middle elements real part value
@@ -345,6 +345,55 @@ void SignalProcessing::setOversample(unsigned int oversample)
     }
 }
 
+void SignalProcessing::applyMinusPIOverTwoFreqShift(ComplexVector& array)
+{
+    static const Complex s_minusPiOverTwo[] = {Complex(1,0), Complex(0,-1), Complex(-1,0), Complex(0,1)};
+    for (unsigned int i = 0;i < array.length();i++) {
+	Complex::multiply(array[i],array[i],s_minusPiOverTwo[i % 4]);
+    }
+}
+
+void SignalProcessing::correlate(ComplexVector& out, const ComplexVector& a1, unsigned int a1Start, 
+	unsigned int a1Len, const FloatVector& a2)
+{
+    if (out.length() != a1Len)
+	Debug(DebugStub,"Correlate Different Lengths!");
+    if (a1.length() < a1Start + a1Len)
+	Debug(DebugStub,"Correlate Invallid a1 indexing!");
+    unsigned int halfL = (a2.length() - 1) / 2;
+    unsigned int length = a2.length();
+    Complex* x = out.data();
+    
+    // The input data should be padded with a2 length.
+    
+    // substract represents the amount of data that should be at the start of a1.
+    int substract = halfL;
+    
+    int end1 = halfL + 1;
+    for (int i = 0;i < end1; i ++, x ++) {
+	(*x).set(0,0);
+	int tindex = i - substract + a1Start;
+	for (unsigned int j = (halfL - i);j <  length;j ++)
+	    Complex::sumMulF(*x,a1[tindex + j],a2[j]);
+    }
+    
+    unsigned int end = a1Len - end1;
+    end += a1.length() % 2;
+    for (unsigned int i = end1;i < end; i ++, x ++) {
+	(*x).set(0,0);
+	int tindex = i - substract + a1Start;
+	for (unsigned int j = 0;j < length;j ++)
+	    Complex::sumMulF(*x,a1[tindex + j],a2[j]);
+    }
+
+    for (unsigned int i = end;i < a1Len; i ++, x ++) {
+	unsigned int lastJ = (a1Len - i) + halfL;
+	(*x).set(0,0);
+	int tindex = i - substract + a1Start;
+	for (unsigned int j = 0;j < lastJ;j ++)
+	    Complex::sumMulF(*x,a1[tindex + j],a2[j]);
+    }
+}
 
 //
 // SigProcUtils
@@ -424,6 +473,66 @@ String& SigProcUtils::appendSplit(String& buf, const String& str, unsigned int l
     buf << tmpBuf;
     delete[] tmpBuf;
     return buf;
+}
+
+void SigProcUtils::callbackParse(Complex& obj, const String& data)
+{
+    float r = 0,i = 0;
+    ::sscanf(data.c_str(),"%g %g",&r,&i);
+    obj.set(r,i);
+}
+
+void Equalizer::defaultEqualize(FloatVector& dataOut, const ComplexVector& in1, const ComplexVector& in2, int in2len)
+{
+    if (dataOut.length() != in1.length())
+	dataOut.resize(in1.length());
+    // NOTE Steps Skipped
+    // In the original version this metod will do a correlation of one complex vector and the conjugate 
+    // of another complex vector.
+    // After the correlation the imaginary part is ignored
+    // So calculate the correlation only for real part and do a inplace conjugation
+    unsigned int halfL = (in2len - 1) / 2;
+    unsigned int length = in2len;
+    float* f = dataOut.data();
+    
+    // The input data should be padded with in2 length.
+    
+    // substract represents the amount of data that should be at the start of in1.
+    int substract = halfL;
+    
+    int end1 = halfL + 1;
+    for (int i = 0;i < end1; i ++, f ++) {
+	float set = 0;
+	int tindex = i - substract;
+	for (unsigned int j = (halfL - i);j <  length;j ++) {
+	    int findex = tindex + j;
+	    set += in1[findex].real() * in2[j].real() + in1[findex].imag() * in2[j].imag();
+	}
+	(*f) = set;
+    }
+    
+    unsigned int end = in1.length() - end1;
+    end += in1.length() % 2;
+    for (unsigned int i = end1;i < end; i ++, f ++) {
+	float set = 0;
+	int tindex = i - substract;
+	for (unsigned int j = 0;j < length;j ++) {
+	    int findex = tindex + j;
+	    set += in1[findex].real() * in2[j].real() + in1[findex].imag() * in2[j].imag();
+	}
+	(*f) = set;
+    }
+
+    for (unsigned int i = end;i < in1.length(); i ++, f ++) {
+	unsigned int lastJ = (in1.length() - i) + halfL;
+	float set = 0;
+	int tindex = i - substract;
+	for (unsigned int j = 0;j < lastJ;j ++) {
+	    int findex = tindex + j;
+	    set += in1[findex].real() * in2[j].real() + in1[findex].imag() * in2[j].imag();
+	}
+	(*f) = set;
+    }
 }
 
 // Append float value to a String (using %g format)

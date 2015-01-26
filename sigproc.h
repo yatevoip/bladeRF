@@ -24,6 +24,7 @@
 
 #include <yateclass.h>
 #include <math.h>
+#include <stdio.h>
 
 namespace TelEngine {
 
@@ -102,6 +103,13 @@ public:
     static String& appendSplit(String& buf, const String& str, unsigned int lineLen,
 	unsigned int offset = 0, const char* linePrefix = 0,
 	const char* suffix = "\r\n");
+
+    /**
+     * Callback method to parse a complex number
+     * @param obj The complex number resulted from parse.
+     * @param data The string to be parsed
+     */
+    static void callbackParse(Complex& obj, const String& data);
 	
     /**
      * Append float value to a String (using "%g" format)
@@ -960,6 +968,26 @@ public:
 	}
 
     /**
+     * Create a vector from a string
+     * @param input The input string
+     * @param parseCallback Callback method to parse the data.
+     * @return True if the data can be parsed.
+     */
+    bool parse(const String& input,void (*callbackParse)(Obj& obj, const String& data)) {
+	ObjList* split = input.split(',',false);
+	if (!split)
+	    return false;
+	resize(split->count());
+	Obj* data = m_data;
+	for (ObjList* o = split->skipNull();o;o = o->skipNext(),data++) {
+	    String* srep = static_cast<String*>(o->get());
+	    callbackParse(*data,*srep);
+	}
+	TelEngine::destruct(split);
+	return true;
+    }
+
+    /**
      * Fill a vector
      * @param dest Destination buffer
      * @param destLen Destination buffer length
@@ -1179,14 +1207,17 @@ public:
      * Compute the power level from Complex array middle
      * @param data Array data start
      * @param len Array length
-     * @param middle Middle number of elements to use
+     * @param use Number of elements to use
      * @param param Parameter to multiply with the elements sum result
+     * @param middle Optional the middle value
      * @return Power value
      */
     static inline float computePower(const Complex* data, unsigned int len,
-	unsigned int middle, float param = 1.0) {
-	    if (data && len && middle <= len)
-		return param * Complex::sumMulConj(data + (len - middle) / 2,middle);
+	unsigned int use, float param = 1.0, int startFrom = -1) {
+	    if (startFrom == -1)
+		startFrom = (len - use) / 2;
+	    if (data && len && (startFrom + use) <= len)
+		return param * Complex::sumMulConj(data + startFrom,use);
 	    return 0;
 	}
 
@@ -1225,6 +1256,21 @@ public:
 	    return true;
 	}
 
+    /**
+     * Multiply the input data with a -PI / 2 frequency shift array
+     * @param array The input data to be multiplyed
+     */
+    static void applyMinusPIOverTwoFreqShift(ComplexVector& array);
+
+    /**
+     * Correlate two vectors.
+     * @param out The output data
+     * @param a1 First input vector
+     * @param a1Start Position to start correlation in the first input vector
+     * @param a1Len Data length to be used from first input array starting from a1Start index
+     * @param a2 The second input vector
+     */
+    static void correlate(ComplexVector& out, const ComplexVector& a1, unsigned int a1Start, unsigned int a1Len, const FloatVector& a2);
 private:
     // Init oversampling rate and related data
     void setOversample(unsigned int oversample);
@@ -1237,6 +1283,31 @@ private:
     unsigned int m_rampOffset;           // Power ramping offset
     unsigned int m_rampTrailIdx;         // Index of power ramping trailing edge
 };
+
+class Equalizer
+{
+public:
+    enum {
+	Default,
+    };
+    /**
+     * "The equalizer" TODO ask David for a better description!
+     * @param dataOut Data to be filled (u vector)
+     * @param in1 First input data
+     * @param in2 Second input data
+     * @param mode The operating mode
+     * @return True if the mode is recognized..
+     */
+    static bool equalize(FloatVector& dataOut, const ComplexVector& in1, const ComplexVector& in2, int in2len,int mode = Default) {
+	if (mode != Default)
+	    return false;
+	defaultEqualize(dataOut,in1,in2,in2len);
+	return true;
+    }
+private:
+    static void defaultEqualize(FloatVector& dataOut, const ComplexVector& in1, const ComplexVector& in2, int in2len);
+};
+
 
 }; // namespace TelEngine
 

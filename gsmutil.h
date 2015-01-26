@@ -476,18 +476,14 @@ public:
 	{}
 
     /**
-     * Setup a buffer of symbol estimates from this burst
-     * The buffer start is filled with time TN/FN, RSSI and timing offset
-     * @param buf Destination buffer
-     * @param len Buffer length
-     * @return The number of bytes set in buffer
+     * Fill the buffer start with time TN/FN, RSSI and timing offset
      */
-    unsigned int buildEstimatesBuffer(int8_t* buf, unsigned int len);
+    void fillEstimatesBuffer();
 
     float m_powerLevel;                  // Received power level
     float m_timingError;                 // Timing advance error
     ComplexVector m_data;                // Data
-    FloatVector m_bitEstimate;           // Output
+    uint8_t m_bitEstimate[156];          // Output
 };
 
 }; // namespace TelEngine

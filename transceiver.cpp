@@ -41,6 +41,8 @@
 #endif
 
 #define FILLER_FRAMES_MIN 102
+#define AVEREGE_NOISE_LENGTH 102
+#define BOARD_SHIFT 4
 
 // Dump data when entering in qmf() function
 //#define TRANSCEIVER_DUMP_QMF_IN
@@ -51,7 +53,10 @@
 // Dump input data on ARFCN process start / exit
 //#define TRANSCEIVER_DUMP_ARFCN_PROCESS_IN
 //#define TRANSCEIVER_DUMP_ARFCN_PROCESS_OUT
+// Dump the RX data for testing.
 //#define TRANSCEIVER_DUMP_RX_DEBUG
+// Dump only the input vector and the output data for RX
+//#define TRANSCEIVER_DUMP_RX_INPUT_OUTPUT
 
 
 // Minimum data length for radio Rx burst to be processed by an ARFCN
@@ -95,6 +100,69 @@ protected:
     TransceiverObj* m_obj;
 };
 
+/** TODO NOTE 
+ * The following conde is for testing purpose */
+static ObjList s_indata;
+static Mutex s_inDataLoker;
+
+class RxInData : public GenObject
+{
+public:
+    RxInData(const ComplexVector& v, const GSMTime& t)
+    {
+	m_data.resize(v.length());
+	for (unsigned int i = 0;i < v.length();i++) {
+	    m_data[i] = v[i];
+	}
+	m_time = t;
+    }
+    ComplexVector m_data;
+    GSMTime m_time;
+
+    static void add(const ComplexVector& v, const GSMTime& t)
+    {
+	Lock myLock(s_inDataLoker);
+	RxInData* in = new RxInData(v,t);
+	s_indata.append(in);
+	if (s_indata.count() > 100) {
+	    ObjList* o = s_indata.skipNull();
+	    if (o)
+		o->remove();
+	}
+    }
+    
+    static void dump(const GSMTime& t) {
+	RxInData* d = 0;
+	Lock myLock(s_inDataLoker);
+	for (ObjList* o = s_indata.skipNull();o;) {
+	    RxInData* rx = static_cast<RxInData*>(o->get());
+	    if (t > rx->m_time) {
+		o->remove();
+		o = o->skipNull();
+		continue;
+	    }
+	    if (rx->m_time == t) {
+		o->remove(false);
+		o = o->skipNull();
+		d = rx;
+		continue;
+	    }
+	    o = o->skipNext();
+	}
+	if (!d) {
+	    Debug(DebugWarn,"Unable to find Input Data!!");
+	    return;
+	}
+	String dump;
+	Complex::dump(dump,d->m_data.data(),d->m_data.length());
+	::printf("input-data:%s",dump.c_str());
+    }
+};
+
+/** TODO NOTE 
+ * End test code */
+
+
 ObjList TrxWorker::s_threads;
 Mutex TrxWorker::s_mutex(false,"TrxWorkers");
 
@@ -117,6 +185,20 @@ const TokenDict TrxWorker::s_info[] = {
     {"Radio device read",      RadioRead},
     {0,0},
 };
+
+static String& dumpAppendFloat(String& dest, const float& val, const char* sep = 0)
+{
+    char s[80];
+    sprintf(s,"%g",val);
+    return dest.append(s,sep);
+}
+
+static String& dumpAppendComplex(String& dest, const Complex& val, const char* sep)
+{
+    char s[170];
+    sprintf(s,"%g%+gi",val.real(),val.imag());
+    return dest.append(s,sep);
+}
 
 bool TrxWorker::create(Thread*& th, int type, TransceiverObj* o)
 {
@@ -553,18 +635,58 @@ void TransceiverObj::setTransceiver(Transceiver& t, const char* name)
 
 // Dump to output a received burst
 void TransceiverObj::dumpRecvBurst(const char* str, const GSMTime& time,
-    const Complex* c, unsigned int len, bool dumpShort)
+    const Complex* c, unsigned int len)
 {
     if (!debugAt(DebugAll))
 	return;
     String tmp;
     Complex::dump(tmp,c,len);
-    if (!dumpShort)
-	Debug(this,DebugAll,"%s%s TN=%u FN=%u len=%u:%s [%p]",
+    Debug(this,DebugAll,"%s%s TN=%u FN=%u len=%u:%s [%p]",
 	    prefix(),TelEngine::c_safe(str),time.tn(),time.fn(),len,
 	    tmp.safe(),this);
+}
+
+void demodulatorTestPoint(const String& name, const ComplexVector& out, int arfcn, int start = -1, int len = -1)
+{
+#ifdef TRANSCEIVER_DUMP_RX_DEBUG
+    if (start == -1)
+	start = 0;
+    int end = start;
+    if (len == -1 || len > (int)out.length())
+	end += out.length();
     else
-	::printf("\n%s:%s\n",str,tmp.safe());
+	end += len;
+    String dump;
+    for (int i = start;i < end;i++)
+	out[i].dump(dump);
+    ::printf("\n%s:%d:%s\n",name.c_str(),arfcn,dump.c_str());
+#endif
+}
+
+
+void TransceiverObj::dumpRxData(const char* prefix, unsigned int index, const char* postfix,
+	const Complex* c, unsigned int len)
+{
+    if (!debugAt(DebugAll))
+	return;
+#ifdef TRANSCEIVER_DUMP_RX_DEBUG
+    String tmp;
+    Complex::dump(tmp,c,len);
+    ::printf("\n%s%d%s:%s\n",prefix,index,postfix,tmp.safe());
+#endif
+}
+
+void TransceiverObj::dumpRxData(const char* prefix, unsigned int index, const char* postfix,
+	const float* f, unsigned int len)
+{
+    if (!debugAt(DebugAll))
+	return;
+#ifdef TRANSCEIVER_DUMP_RX_DEBUG
+    String tmp;
+    for (int i = 0;i < len;i++,f++)
+	dumpAppendFloat(tmp,*f,",");
+    ::printf("\n%s%d%s:%s\n",prefix,index,postfix,tmp.safe());
+#endif
 }
 
 
@@ -699,20 +821,6 @@ int TransceiverSockIface::writeSocket(const void* buf, unsigned int len,
     if (!(buf && len))
 	return 0;
 
-#ifdef TRANSCEIVER_DUMP_RX_DEBUG
-    if (dbg.debugAt(DebugAll) && !m_text) {
-	String dumprx;
-	const uint8_t* b = (const uint8_t*)buf;
-	for (unsigned int i = 0;i < len;i++)
-	    dumprx << b[i] << ", ";
-	int arfcnIndex = -1;
-	ARFCN* arfcn = YOBJECT(ARFCN,&dbg);
-	if (arfcn)
-	    arfcnIndex = arfcn->arfcn();
-	::printf("\noutput-data:%d:%s\n",arfcnIndex,dumprx.c_str());
-    }
-#endif
-
     // NOTE: Handle partial write for stream sockets
     for (unsigned int i = 0; i < m_writeAttempts; i++) {
 	int r = m_socket.sendTo(buf,len,m_remote);
@@ -762,6 +870,11 @@ Transceiver::Transceiver(const char* name)
     m_rxQueue(8,"TrxRxQueue"),
     m_oversamplingRate(1),
     m_burstMinPower(0),
+    m_snrThreshold(2),
+    m_wrtFullScaleThreshold(-2),
+    m_peakOverMeanThreshold(3),
+    m_upPowerThreshold(-2),
+    m_maxPropDelay(63),
     m_arfcn(0),
     m_arfcnCount(0),
     m_arfcnConf(0),
@@ -817,7 +930,6 @@ bool Transceiver::init(RadioIface* radio, const NamedList& params)
     bool ok = false;
     while (true) {
 	m_oversamplingRate = getUInt(params,"oversampling");
-	setBurstMinPower(params.getDoubleValue(YSTRING("burst_min_power")));
 	unsigned int arfcns = getUInt(params,"arfcns");
 	m_arfcnConf = getUInt(params,"conf_arfcns");
 	const String* rAddr = params.getParam(YSTRING("remoteaddr"));
@@ -862,6 +974,13 @@ void Transceiver::reInit(const NamedList& params)
     m_freqOffset = params.getIntValue(YSTRING("RadioFrequencyOffset"),128,64,192);
     setDebugLevel(this,params.getParam(YSTRING("debug_level")));
     setDebugLevel(m_radio,params.getParam(YSTRING("debug_radio_level")));
+
+    m_snrThreshold = params.getIntValue(YSTRING("snr_threshold"),m_snrThreshold);
+    m_wrtFullScaleThreshold = params.getIntValue(YSTRING("wrt_full_scale"),m_wrtFullScaleThreshold);
+    m_peakOverMeanThreshold = params.getIntValue(YSTRING("peak_over_mean"),m_peakOverMeanThreshold);
+    m_maxPropDelay = params.getIntValue(YSTRING("max_prop_delay"),m_maxPropDelay);
+    setBurstMinPower(params.getIntValue(YSTRING("burst_min_power"),-50));
+    m_upPowerThreshold = params.getIntValue(YSTRING("up_power_warn"),m_upPowerThreshold);
 }
 
 // Wait for PowerOn state
@@ -1062,7 +1181,7 @@ bool Transceiver::sendBurst(GSMTime& time)
 	::printf("TX %u at fn=%u tn=%u:\r\n%s\r\n",
 	    m_sendBurstBuf.length(),time.fn(),time.tn(),d.c_str());
     }
-    return m_radio->sendData(m_sendBurstBuf);
+    return m_radio->sendData(m_sendBurstBuf,time);
 }
 
 // Process a received radio burst
@@ -1198,12 +1317,12 @@ bool Transceiver::command(const char* str, String* rsp, unsigned int arfcn)
 }
 
 // Set the minimum power to accept radio bursts
-void Transceiver::setBurstMinPower(float val)
+void Transceiver::setBurstMinPower(int val)
 {
     if (m_burstMinPower == val)
 	return;
     m_burstMinPower = val;
-    Debug(this,DebugInfo,"Burst minimum power level set to %f [%p]",val,this);
+    Debug(this,DebugInfo,"Burst minimum power level set to %d [%p]",val,this);
 }
 
 // Internal fatal error
@@ -1611,6 +1730,23 @@ int Transceiver::handleCmdSetGain(bool rx, String& cmd, String* rspParam)
     return code;
 }
 
+bool loadFileData(const String& fileName, ComplexVector& data)
+{
+    File f;
+    if (!f.openPath(fileName)) {
+	Debug(DebugNote,"Failed to open file '%s'!",fileName.c_str());
+	return false;
+    }
+    DataBlock buf(0,(unsigned int)f.length());
+    int read = f.readData(buf.data(),buf.length());
+    if (f.length() != read) {
+	Debug(DebugInfo,"Failed to read all the data from file %s",fileName.c_str());
+	return false;
+    }
+    String s((char*)buf.data(),buf.length());
+    return data.parse(s,&SigProcUtils::callbackParse);
+}
+
 // Handle CUSTOM command. Return status code
 int Transceiver::handleCmdCustom(String& cmd, String* rspParam, String* reason)
 {
@@ -1669,7 +1805,7 @@ int Transceiver::handleCmdCustom(String& cmd, String* rspParam, String* reason)
 	return CmdEOk;
     }
     if (cmd.startSkip("testtxburst ",false)) {
-	int increment = 0;
+	int increment = -1;
 	if (cmd == YSTRING("10"))
 	    increment = 2;
 	if (cmd == YSTRING("11"))
@@ -1684,8 +1820,7 @@ int Transceiver::handleCmdCustom(String& cmd, String* rspParam, String* reason)
 	if (!m_txTestBurst)
 	    return CmdEFailure;
 	return CmdEOk;
-    }
-    if (cmd.startSkip("testtxburst")) {
+    } else if (cmd.startSkip("testtxburst")) {
 	Lock myLock(m_testMutex);
 	TelEngine::destruct(m_txTestBurst);
 	return CmdEOk;
@@ -1693,8 +1828,17 @@ int Transceiver::handleCmdCustom(String& cmd, String* rspParam, String* reason)
     if (cmd == YSTRING("dumponetx")) {
 	m_dumpOneTx = true;
 	return CmdEOk;
-    }
-    if (cmd.startSkip("predefined ",false)) {
+    } else if (cmd.startSkip(YSTRING("complexrx "),false)) {
+	ComplexVector* cv = new ComplexVector();
+	if (!loadFileData(cmd,*cv))
+	    return CmdEUnkCmd;
+	// TODO See how to set burst type
+	m_radio->setLoopbackArray(cv);
+	return CmdEOk;
+    } else if (cmd == YSTRING("complexrx")) {
+	m_radio->setLoopbackArray();
+	return CmdEOk;
+    } else if (cmd.startSkip("predefined ",false)) {
 	int min = 0, max = 0, inc = 0;
 	int ret = ::sscanf(cmd.c_str(),"%d %d %d",&min,&max,&inc);
 	if (ret != 3 || min > max)
@@ -1719,6 +1863,21 @@ int Transceiver::handleCmdCustom(String& cmd, String* rspParam, String* reason)
     if (cmd.startSkip("dump-freq-shift ",false)) {
 	dumpFreqShift(cmd.toInteger());
 	return CmdEOk;
+    } else if (cmd.startSkip("noise",false)) {
+	String dump;
+	for (unsigned int i = 0;i < m_arfcnCount;i++) {
+	    dump << "ARFCN: ";
+	    dump <<  i;
+	    dump << ": average noise level: ";
+	    dumpAppendFloat(dump,m_arfcn[i]->getAverageNoiseLevel());
+	    dump << " ; ";
+	}
+	*rspParam << dump;
+	return CmdEOk;
+    } else if (cmd.startSkip("slots-delay")) {
+	String dump;
+	for (unsigned int i = 0;i < m_arfcnCount;i++) 
+	    m_arfcn[i]->dumpSlotsDelay(*rspParam);
     }
     if (m_radio)
 	return m_radio->command(cmd,rspParam,reason);
@@ -1838,105 +1997,190 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
     XDebug(a,DebugAll,"%sprocessRadioBurst() TN=%u FN=%u len=%u burst_type=%s [%p]",
 	a->prefix(),t.tn(),t.fn(),len,ARFCN::burstType(bType),a);
 #endif
-    // Channel estimator
-    unsigned int inIdx = 0;
-    ComplexVector* s = 0;
-    ComplexVector chanEstimate;
+    
+    // Use the center values of the input data to calculate the power level.
+    float power = SignalProcessing::computePower(b.m_data.data(),
+	b.m_data.length(),4,0.2, (148 - 4) / 2);
+    
+    // Use the last 4 samples of the input data (guard period) to calculate the noise level
+    float noise = SignalProcessing::computePower(b.m_data.data(),
+	b.m_data.length(),4,0.25,b.m_data.length() - 4);
+
+    a->addAverageNoise(noise);
+
+    // Calculate Signal to Noise ratio
+    float SNR = power/noise;
+
+    if (SNR < m_snrThreshold) {
+	// Discard Burst low SNR
+	a->dropRxBurst("low SNR",t,len,DebugInfo,false);
+	return false;
+    }
+
+    b.m_powerLevel = 10 * ::log10f(power);
+
+    if (b.m_powerLevel < m_burstMinPower) {
+	a->dropRxBurst("low power",t,len,DebugAll,false);
+	return false;
+    }
+    Debug(a,DebugAll,"processRadioBurst ARFCN %d Slot %d. Level %f, noise %f, SNR %f powerDb %g",
+	   arfcn,slot.slot,power, noise, SNR,b.m_powerLevel);
+
+    if  (b.m_powerLevel > m_upPowerThreshold) 
+	Debug(a,DebugInfo, "Receiver clipping on ARFCN %d Slot %d, %f dB", arfcn, slot.slot, b.m_powerLevel);
+    
+    SignalProcessing::applyMinusPIOverTwoFreqShift(b.m_data);
+    
+    FloatVector* trainingSeq = 0;
+    int start,heLen,center;
+    
     if (bType == ARFCN::BurstNormal) {
-	s = &m_nbTSC[m_tsc];
-	inIdx = (ARFCN_RXBURST_LEN - m_tscSamples) / 2;
-	chanEstimate.resize(m_tscSamples);
+	trainingSeq  = &m_nbTSC[m_tsc];
+	start = b.m_data.length() / 2 - GSM_NB_TSC_LEN / 2;
+	heLen = GSM_NB_TSC_LEN;
+	center = GSM_NB_TSC_LEN / 2 - 1;
     }
     else {
-	s = &m_abSync;
-	inIdx = 8;
-	chanEstimate.resize(m_abSync.length());
+	trainingSeq = &m_abSync;
+	start = 8;
+	center = 24; // HardCodded Ask David
+	heLen = GSM_AB_SYNC_LEN + m_maxPropDelay;
     }
-    if (inIdx + chanEstimate.length() > ARFCN_RXBURST_LEN) {
-	a->dropRxBurst("invalid channel estimator lengths",t,len,DebugGoOn);
+    
+    dumpRxData("correlate-in1",arfcn,"",b.m_data.data() + start,heLen);
+    dumpRxData("correlate-in2",arfcn,"",trainingSeq->data(), trainingSeq->length());
+    
+    ComplexVector he(heLen);
+    SignalProcessing::correlate(he,b.m_data,start,heLen,*trainingSeq);
+    
+    dumpRxData("correlate-out",arfcn,"",he.data(), he.length());
+
+    // Find the peak power in the channel estimate.
+    float max = 0, rms = 0;
+    int maxIndex = -1;
+    // GSM standards specififys that we should calculate from center +/- 2
+    // We use center +/- 5 to be sure
+    for (unsigned i = center - 5; i < he.length(); i++) {
+	float pwr = he[i].mulConj();
+	rms += pwr;
+	if (pwr < max) 
+	    continue;
+	max = pwr;
+	maxIndex = i;
+    }
+    rms /= (he.length() - (center - 5));
+    if (rms == 0) {
+	a->dropRxBurst("invalid rms '0'",t,len,DebugNote,true);
 	return false;
     }
-    Complex* he = chanEstimate.data();
-    Complex* x = b.m_data.data() + inIdx;
-    unsigned int xLen = ARFCN_RXBURST_LEN - inIdx;
-    for (unsigned int n = chanEstimate.length(); n; n--)
-	Complex::sumMul(*he++,x++,xLen--,s->data(),s->length());
-#ifdef TRANSCEIVER_DUMP_RX_DEBUG
-    if (debugAt(DebugAll)) {
-	String dumpHE;
-	for (unsigned int i = 0;i < chanEstimate.length();i++)
-	    chanEstimate[i].dump(dumpHE);
-	::printf("\ndemod-he:%d:%s\n",arfcn,dumpHE.c_str());
+    float peakOverMean = max / rms;
+    Debug(a,DebugAll,"ARFCN %d Slot %d. chan max %f @ %d, rms %f, peak/mean %f", 
+		arfcn,slot.slot,max, maxIndex, rms, peakOverMean);
+    if (peakOverMean < m_peakOverMeanThreshold) {
+	a->dropRxBurst("low peak / min",t,len,DebugInfo,false);
+	return false;
     }
+    
+    
+    // TOA error.  Negative for early, positive for late.
+    int toaError = maxIndex - center;
+    
+    DDebug(a,DebugAll,"ARFCN %d Slot %d. TOA error %d", arfcn,slot.slot,toaError);
+
+    // indexing relationships
+    // maxIndex - actual t0 of the received signal channel estimate
+    // center - expected t0 of the received signal channel estimate
+    // toaError - the offset of the channel estaimte from its expected position, negative for early
+
+    // TOA error should not exceed +/-2 for a normal burst.
+    // It indicates a failure of the closed loop timing control.
+    
+    if (bType == ARFCN::BurstNormal && (toaError > 2 || toaError < -2))
+	Debug(a,DebugAll,"ARFCN %d Slot %d. Excessive TOA error %d, peak/mean %f",arfcn,slot.slot, toaError, peakOverMean);
+   
+    // Shift the received signal to compensate for TOA error.
+    // This shifts the signal so that the max power image is aligned to the expected position.
+    // The alignment error is +/- 1/2 symbol period;
+    // fractional alignment is corrected by correlation with channel estaimte.
+    if (toaError < 0) {
+	for (unsigned int i = -toaError; i < b.m_data.length(); i++)
+	    b.m_data[i] = b.m_data[i + toaError];
+	for (int i = 0; i < -toaError; i++)
+	    b.m_data[i].set(0,0);
+    } else if (toaError != 0){
+	for (unsigned int i = 0; i < b.m_data.length() - toaError; i++)
+	    b.m_data[i] = b.m_data[i + toaError];
+	for (unsigned int i = b.m_data.length() - toaError; i < b.m_data.length(); i++)
+	    b.m_data[i].set(0,0);
+    }
+
+    // Trim and center the channel estimate.
+    // This shifts the channel estimate to put the max power peak in the center, +/- 1/2 symbol period.
+    // The alignment error of heTrim is exactly the opposiate of the alignment error of xf2.
+    if (maxIndex < 0) {
+	a->dropRxBurst("negative max index",t,len,DebugStub);
+	return false;
+    }
+
+    // GSM standards specififys 10 
+    // To be sure we go 11
+    // ASK David for details
+    for (unsigned i = 0; i < 11; i++)
+	he[i] = he[maxIndex - 5 + i];
+
+    dumpRxData("demod-he",arfcn,"",he.data(), he.length());
+
+    float sumTSq = 0;
+    float sumP = 0;
+    int m = 0;
+    for(int i = 5; i < 11; i++,m++) {
+	float p = he[i].mulConj();
+	sumTSq += m * m *p;
+	sumP += p;
+    }
+    float delaySpread = sqrt(sumTSq/sumP);
+    a->addSlotDelay(slot.slot,delaySpread);
+    
+    FloatVector v(b.m_data.length());
+    Equalizer::equalize(v,b.m_data,he,11);
+
+    dumpRxData("demod-u",arfcn,"",v.data(), v.length());
+    
+    float powerSum = 0;
+    // Calculate the middle without guard period
+    for (unsigned int i = 72; i <= 76;i++)
+	powerSum += v[i] * v[i];
+
+    powerSum = ::sqrtf(powerSum * 0.2);
+
+    for (unsigned int i = 8;i < ARFCN_RXBURST_LEN;i++) {
+	float vi = v[i - BOARD_SHIFT] / powerSum;
+	if (vi >= 1)
+	    b.m_bitEstimate[i] = 255;
+	else if (vi  <= -1)
+	    b.m_bitEstimate[i] = 0;
+	else
+	    b.m_bitEstimate[i] = (uint8_t)::round((vi + 1.0F) * 0.5 * 255);
+    }
+
+    bool printOutput = true;
+#ifdef TRANSCEIVER_DUMP_RX_DEBUG
+    printOutput = true;
 #endif
 
-    // Demodulate
-    // We will use the conjugate of channel estimator array
-    Complex::conj(chanEstimate.data(),chanEstimate.length());
-    unsigned int halfHe = chanEstimate.length() / 2;
-    b.m_bitEstimate.resize(ARFCN_RXBURST_LEN);
-    float* w = b.m_bitEstimate.data();
-    for (unsigned int i = 0; i < b.m_bitEstimate.length(); i++) {
-	Complex c;
-	// w[i] = SUM(j=0..chanEstimate.length() - 1) x[i + j - halhHe] * CONJ(he[j])
-	x = b.m_data.data();
-	he = chanEstimate.data();
-	if (i >= halfHe) {
-	    unsigned int idx = i - halfHe;
-	    Complex::sumMul(c,x + idx,len - idx,he,chanEstimate.length());
-	}
-	else {
-	    unsigned int skip = halfHe - i;
-	    Complex::sumMul(c,x,len,he + skip,chanEstimate.length() - skip);
-	}
-	*w++ = c.real();
-    }
-#ifdef TRANSCEIVER_DUMP_RX_DEBUG
-    if (debugAt(DebugAll)) {
-	String dumpU;
-	char cdumpu[50];
-	for (unsigned int i = 0;i < b.m_bitEstimate.length();i++) {
-	    int len = ::sprintf(cdumpu,"%g, ",w[i]);
-	    dumpU.append(cdumpu,len);
-	}
-	::printf("\ndemod-u:%d:%s\n",arfcn,dumpU.c_str());
-    }
+#ifdef TRANSCEIVER_DUMP_RX_INPUT_OUTPUT
+    printOutput = true;
 #endif
-    // Calculate the power level
-    b.m_powerLevel = SignalProcessing::computePower(b.m_bitEstimate.data(),
-	b.m_bitEstimate.length(),5,0.2);
-    if (!b.m_powerLevel) {
-	a->dropRxBurst("zero power",t,len,DebugNote,false);
-	return false;
-    }
-    // Set the soft bit estimate in real part of output
-    float sqrtPower = ::sqrtf(b.m_powerLevel);
-    unsigned int n = b.m_bitEstimate.length();
-    for (w = b.m_bitEstimate.data(); n; n--, w++)
-	*w = (((*w / sqrtPower) + 1) / 2);
-#ifdef TRANSCEIVER_DUMP_ARFCN_PROCESS_OUT
-    String tmpExit;
-    n = b.m_bitEstimate.length();
-    for (w = b.m_bitEstimate.data(); n; n--, w++) {
-	tmpExit << " ";
-        tmpExit.append(*w,3);
-	if (n != 1)
-	    tmpExit << ",";
-    }
-    Debug(a,DebugAll,"%sprocessRadioBurst() exit. power=%g RSSI=%g data:%s [%p]",
-	a->prefix(),b.m_powerLevel,b.m_timingError,tmpExit.c_str(),a);
+
+    if (debugAt(DebugAll) && printOutput) {
+#ifdef TRANSCEIVER_DUMP_RX_INPUT_OUTPUT
+	RxInData::dump(t);
 #endif
-#ifdef TRANSCEIVER_DUMP_RX_DEBUG
-    if(debugAt(DebugAll)) {
-	String dumpDemodOut;
-	char dodump[50];
-	for (unsigned int i = 0; i < b.m_bitEstimate.length(); i++) {
-	    int dlen = ::sprintf(dodump," %g,",b.m_bitEstimate[i]);
-	    dumpDemodOut.append(dodump,dlen);
-	}
-	::printf("\ndemod-out:%d:%s\n",arfcn,dumpDemodOut.c_str());
+	String dump,db;
+	for (int i = 8;i < ARFCN_RXBURST_LEN;i++)
+	    dump << b.m_bitEstimate[i] << ",";
+	::printf("\noutput-data:%d:%s\n",arfcn,dump.c_str());
     }
-#endif
     return true;
 }
 
@@ -1986,11 +2230,8 @@ void TransceiverQMF::radioPowerOnStarting()
 	}
 #ifdef TRANSCEIVER_DUMP_RX_DEBUG
 	String dumphb = "hb:";
-	char cdump[50];
-	for (unsigned int i = 0; i < m_halfBandFltCoeff.length(); i++) {
-	    int dlen = ::sprintf(cdump," %g",m_halfBandFltCoeff[i]);
-	    dumphb.append(cdump,dlen);
-	}
+	for (unsigned int i = 0; i < m_halfBandFltCoeff.length(); i++)
+	    dumpAppendFloat(dumphb,m_halfBandFltCoeff[i],",");
 	::printf("%s",dumphb.c_str());
 #endif
     }
@@ -2048,6 +2289,9 @@ void TransceiverQMF::processRadioData(RadioRxData* d)
     XDebug(this,DebugAll,"Processing radio input TN=%u FN=%u len=%u [%p]",
 	d->m_time.tn(),d->m_time.fn(),d->m_data.length(),this);
     m_qmf[0].data.steal(d->m_data);
+#ifdef TRANSCEIVER_DUMP_RX_INPUT_OUTPUT
+    RxInData::add(m_qmf[0].data,d->m_time);
+#endif
     qmf(d->m_time);
     TelEngine::destruct(d);
 }
@@ -2093,25 +2337,9 @@ void TransceiverQMF::qmf(const GSMTime& time, unsigned int index)
 #ifdef TRANSCEIVER_DUMP_QMF_IN
     String tmp1;
     tmp1 << "QMF[" << index << "] starting";
-    dumpRecvBurst(tmp1,time,crt.data.data(),crt.data.length(),false);
+    dumpRecvBurst(tmp1,time,crt.data.data(),crt.data.length());
 #endif
-#ifdef TRANSCEIVER_DUMP_RX_DEBUG
-    String dump1;
-    dump1 << "qmf" << index << ".x";
-    dumpRecvBurst(dump1,time,crt.data.data(),crt.data.length(),true);
-#endif
-    // Frequency shift
-    qmfApplyFreqShift(crt);
-#ifdef TRANSCEIVER_DUMP_QMF_FREQSHIFTED
-    String tmp2;
-    tmp2 << "QMF[" << index << "] applied frequency shifting";
-    dumpRecvBurst(tmp2,time,crt.data.data(),crt.data.length(),false);
-#endif
-#ifdef TRANSCEIVER_DUMP_RX_DEBUG
-    String dump2;
-    dump2 << "qmf" << index << ".xp";
-    dumpRecvBurst(dump2,time,crt.data.data(),crt.data.length(),true);
-#endif
+    dumpRxData("qmf[",index,"].x",crt.data.data(),crt.data.length());
     // Forward data to ARFCNs
     if (final) {
 	RadioRxData* r = new RadioRxData(time);
@@ -2121,18 +2349,22 @@ void TransceiverQMF::qmf(const GSMTime& time, unsigned int index)
 	m_arfcn[crt.arfcn]->recvRadioData(r);
 	return;
     }
+    // Frequency shift
+    qmfApplyFreqShift(crt);
+#ifdef TRANSCEIVER_DUMP_QMF_FREQSHIFTED
+    String tmp2;
+    tmp2 << "QMF[" << index << "] applied frequency shifting";
+    dumpRecvBurst(tmp2,time,crt.data.data(),crt.data.length());
+#endif
+    dumpRxData("qmf[",index,"].xp",crt.data.data(),crt.data.length());
     // Build the half band filter, generate low/high band data and call QMF again
     qmfBuildHalfBandFilter(crt);
 #ifdef TRANSCEIVER_DUMP_QMF_HALFBANDFILTER
     String tmp3;
     tmp3 << "QMF[" << index << "] built half band filter";
-    dumpRecvBurst(tmp3,time,crt.halfBandFilter.data(),crt.halfBandFilter.length(),false);
+    dumpRecvBurst(tmp3,time,crt.halfBandFilter.data(),crt.halfBandFilter.length());
 #endif
-#ifdef TRANSCEIVER_DUMP_RX_DEBUG
-    String dump3;
-    dump3 << "qmf" << index << ".w";
-    dumpRecvBurst(dump3,time,crt.halfBandFilter.data(),crt.halfBandFilter.length(),true);
-#endif
+    dumpRxData("qmf[",index,"].xp",crt.halfBandFilter.data(),crt.halfBandFilter.length());
     
     if (indexLo >= 0 && !thShouldExit(this)) {
 	qmfBuildOutputLowBand(crt,m_qmf[indexLo].data);
@@ -2145,8 +2377,6 @@ void TransceiverQMF::qmf(const GSMTime& time, unsigned int index)
 }
 
 // Build the half band filter
-// Behave as the input vector is prepended with n0 zero samples
-// E.g. The data index 0 is at index -n0
 // x: the input data, kept in b.data
 // w: half band filter data, kept in b.halfBandFilter
 // h: half band filter coefficients, kept in m_halfBandFltCoeff
@@ -2156,62 +2386,59 @@ void TransceiverQMF::qmfBuildHalfBandFilter(QmfBlock& b)
     if (b.halfBandFilter.length() < b.data.length())
 	b.halfBandFilter.resize(b.data.length() + 10);
 
-    unsigned int n0 = (m_halfBandFltCoeff.length() - 1) / 2;
+    unsigned int n0 = (m_halfBandFltCoeff.length() + 1) / 2;
+    unsigned int n0_2 = m_halfBandFltCoeff.length();
     Complex* x = b.data.data();
     Complex* w = b.halfBandFilter.data();
     float* h = m_halfBandFltCoeff.data();
     
-    unsigned int rest = b.data.length() / 2;
-    unsigned int n0_2 = n0 * 2;
-    unsigned int i = 0;
-    //w += i;
-    for (; rest; i += 2 , w += 2, --rest) {
-	w->set();
-	int offs = (int)i - (int)n0;
-	unsigned int j = 0;
-	// Start processing when (offs + j) is at least 0
-	// We ignore negative indexes (zero samples): multiplication would be 0 anyway
-	// E.g x[i + 2 * j] is (0,0)
-	// j will start with the number of steps ignored
-	if (offs < 0)
-	    j = ((unsigned int)(-offs) + 1) / 2;
-	unsigned int n = (n0_2 - j + 2) / 2;
-	unsigned int bIters = (rest + 1) / 2;
-	if (n > bIters)
-	    n = bIters;
-	Complex* d = x + i;
-	float* f = h + j;
-	for (; n ; d += 2, f += 2, --n)
-	    Complex::sumMulF(*w,*d,*f);
+    // From w vector only half of the values are used to determine the high and low band filters
+    // So we skip calculating the data.
+
+    // The input data should be padded with m_halfBandFltCoeff length.
+    
+    // substract represents the amount of data that should be at the start of x.
+    int substract = n0 - m_halfBandFltCoeff.length() % 2;
+    
+    for (unsigned int i = 0;i < n0; i += 2, w += 2) {
+	// If i + 2 * j < n0 the input data will contain 0;
+	// So we have i + 2 * j >= n0 -> 2j >= n0 - i
+	(*w).set(0,0);
+	for (unsigned int j = (n0 - i);j <  n0_2;j += 2)
+	    Complex::sumMulF(*w,x[i + j - substract],h[j]);
+    }
+    
+    unsigned int end = b.data.length() - n0;
+    end += b.data.length() % 2;
+    for (unsigned int i = n0;i < end; i += 2, w += 2) {
+	(*w).set(0,0);
+	for (unsigned int j = 0;j < n0_2;j += 2)
+	    Complex::sumMulF(*w,x[i + j - substract],h[j]);
+    }
+
+    for (unsigned int i = end;i < b.data.length(); i += 2, w += 2) {
+	unsigned int lastJ = (b.data.length() - i) + n0;
+	(*w).set(0,0);
+	for (unsigned int j = 0;j < lastJ;j += 2)
+	    Complex::sumMulF(*w,x[i + j - substract],h[j]);
     }
 }
 
 // Build the QMF low band output
-// Behave as the input vector is prepended with n0 zero samples
 // x: the input data, kept in b.data
 // w: half band filter data, kept in b.halfBandFilter
-// y[i] = x[2 * i + 2 * n0] + w[2 * i]
+// y[i] = (x[2 * i + 2 * n0] + w[2 * i]) / 2
 void TransceiverQMF::qmfBuildOutputLowBand(QmfBlock& b, ComplexVector& y)
 {
     y.resize(b.data.length() / 2);
-    unsigned int n0 = (m_halfBandFltCoeff.length() - 1) / 2;
     Complex* yData = y.data();
     Complex* x = b.data.data();
     Complex* w = b.halfBandFilter.data();
-    // 2 * i + 2 * (i - n0) = 4 * i - 2 * n0
-    // E.g. for the first n0 / 2 elements adding 0 to w is useless
-    unsigned int i = 0;
-    unsigned int n = (n0 + 1) / 2;
-    if (n > y.length())
-	n = y.length();
-    for (; i < y.length(); i++, yData++, w += 2) {
-	unsigned int idx = 2 * i + n0;
-	if (idx >= b.data.length())
-	    break;
-	Complex::sum(*yData,x[idx],*w);
+
+    for (unsigned int i = 0;i < y.length();i ++,x += 2,w += 2) {
+	Complex::sum(yData[i],*x,*w);
+	yData[i] *= 0.5f;
     }
-    for (; i < y.length(); i++, yData++, w += 2)
-	*yData = *w;
 }
 
 // Build the QMF high band output
@@ -2222,24 +2449,14 @@ void TransceiverQMF::qmfBuildOutputLowBand(QmfBlock& b, ComplexVector& y)
 void TransceiverQMF::qmfBuildOutputHighBand(QmfBlock& b, ComplexVector& y)
 {
     y.resize(b.data.length() / 2);
-    unsigned int n0 = (m_halfBandFltCoeff.length() - 1) / 2;
     Complex* yData = y.data();
     Complex* x = b.data.data();
     Complex* w = b.halfBandFilter.data();
-    // 2 * i + 2 * (i - n0) = 4 * i - 2 * n0
-    // E.g. for the first n0 / 2 elements the data is zero
-    unsigned int i = 0;
-    unsigned int n = (n0 + 1) / 2;
-    if (n > y.length())
-	n = y.length();
-    for (; i < y.length(); i++, yData++, w += 2) {
-	unsigned int idx = 2 * i + n0;
-	if (idx >= b.data.length())
-	    break;
-	Complex::diff(*yData,x[idx],*w);
+
+    for (unsigned int i = 0;i < y.length();i ++,x += 2,w += 2) {
+	Complex::diff(yData[i],*x,*w);
+	yData[i] *= 0.5f;
     }
-    for (; i < y.length(); i++, yData++, w += 2)
-	yData->set(-w->real(),-w->imag());
 }
 
 void TransceiverQMF::initNormalBurstTSC(unsigned int len)
@@ -2247,23 +2464,26 @@ void TransceiverQMF::initNormalBurstTSC(unsigned int len)
     if (!len || len > GSM_NB_TSC_LEN)
 	len = 16;
     const int8_t* table = GSMUtils::nbTscTable();
-    table += (GSM_NB_TSC_LEN - len) / 2;
-    for (unsigned int i = 0; i < 8; i++, table += GSM_NB_TSC_LEN) {
-	const int8_t* p = table;
+    
+    static const float s_normalScv = 1.0F / 16.0F;
+    for (unsigned int i = 0;i < 8;i++, table += GSM_NB_TSC_LEN) {
 	m_nbTSC[i].resize(len);
-	Complex* c = m_nbTSC[i].data();
-	for (unsigned int n = len; n; n--, c++, p++)
-	    c->set(2 * *p - 1);
+	const int8_t* p = table;
+	p += 5; // David needs to explain why
+	float* f = m_nbTSC[i].data();
+	for (unsigned int n = 0;n < len;n++,f++, p++)
+	    *f = *p ? s_normalScv : - s_normalScv;
     }
 }
 
 void TransceiverQMF::initAccessBurstSync()
 {
     m_abSync.resize(GSM_AB_SYNC_LEN);
+
     const int8_t* p = GSMUtils::abSyncTable();
-    Complex* c = m_abSync.data();
-    for (unsigned int n = GSM_AB_SYNC_LEN; n; n--, c++, p++)
-	c->set(2 * *p - 1);
+    static const float s_accessScv = 1.0F / 41.0F;
+    for (unsigned int i = 0; i < GSM_AB_SYNC_LEN;i++, p++)
+	m_abSync[i] = *p ? s_accessScv : -s_accessScv;
 }
 
 
@@ -2527,12 +2747,7 @@ void ARFCN::recvRadioData(RadioRxData* d)
 	dropRxBurst("invalid length",d->m_time,d->m_data.length(),DebugFail,true,d);
 	return;
     }
-    if (transceiver() &&
-	!transceiver()->checkBurstMinPower(d->m_data.data(),ARFCN_RXBURST_LEN)) {
-	dropRxBurst("low power",d->m_time,d->m_data.length(),DebugNote,false,d);
-	return;
-    }
-    XDebug(this,DebugAll,"%sEnqueueing Rx burst (%p) TN=%u FN=%u len=%u [%p]",
+    XDebug(this,DebugInfo,"%sEnqueueing Rx burst (%p) TN=%u FN=%u len=%u [%p]",
 	prefix(),d,d->m_time.tn(),d->m_time.fn(),d->m_data.length(),this);
     if (m_rxQueue.add(d,transceiver()))
 	return;
@@ -2682,6 +2897,24 @@ void ARFCN::dropRxBurst(const char* reason, const GSMTime& t, unsigned int len, 
 	transceiver()->fatalError();
 }
 
+void ARFCN::addAverageNoise(float current)
+{
+    m_averegeNoiseLevel += (current - m_averegeNoiseLevel) / AVEREGE_NOISE_LENGTH;
+}
+
+void ARFCN::dumpSlotsDelay(String& dest)
+{
+    dest << "ARFCN[" << m_arfcn << "][";
+    for (unsigned int i = 0;i < 8;i++) {
+	dest << "s:";
+	dest << i;
+	dest << ";ds:";
+	dumpAppendFloat(dest,m_slots[i].delay);
+	if (i != 7)
+	    dest << ";";
+    }
+    dest << "];";
+}
 
 //
 // ARFCNSocket
@@ -2758,13 +2991,8 @@ bool ARFCNSocket::recvBurst(GSMRxBurst*& burst)
 {
     if (!burst)
 	return true;
-#define ARFCN_BURST_BUFLEN (8 + GSM_BURST_LENGTH)
-    int8_t buf[ARFCN_BURST_BUFLEN];
-    unsigned int n = burst->buildEstimatesBuffer(buf,ARFCN_BURST_BUFLEN);
-    if (n < ARFCN_BURST_BUFLEN)
-	::memset(&buf[n],0,ARFCN_BURST_BUFLEN - n);
-    return m_data.writeSocket(buf,ARFCN_BURST_BUFLEN,*this) >= 0;
-#undef ARFCN_BURST_BUFLEN
+    burst->fillEstimatesBuffer();
+    return m_data.writeSocket(burst->m_bitEstimate,ARFCN_RXBURST_LEN,*this) >= 0;
 }
 
 // Read socket loop
@@ -2857,7 +3085,8 @@ RadioIface::RadioIface()
     m_samplesPerSymbol(1), m_readThread(0), m_txPowerScale(1.0), m_rxData(true),
     m_txData(false), m_powerOn(false), m_clockMutex(false,"RadioClock"),
     m_txBufferSpace(2,0), m_testMin(0), m_testMax(0), m_testIncrease(0),
-    m_testValue(0), m_loopback(false), m_loopbackSleep(0), m_loopbackNextSend(0)
+    m_testValue(0), m_loopback(false), m_loopbackSleep(0), m_loopbackNextSend(0),
+    m_loopbackArray(0)
     
 {
     m_txSynchronizer.lock();
@@ -2949,13 +3178,14 @@ void RadioIface::runReadRadio()
     transceiver()->waitPowerOn();
     GSMTime time(m_clock);
     time.decTn(3);
-    unsigned int shortBufLen = 156 * m_samplesPerSymbol;
+    unsigned int shortBufLen = BITS_PER_TIMESLOT * m_samplesPerSymbol;
+    
     unsigned int longBufLen = 157 * m_samplesPerSymbol;
 #if 1
     m_rxData.resetInt16(initialReadTs(),longBufLen);
     while (!thShouldExit(transceiver())) {
 	bool shortBuf = ((time.tn() % 4) != 0);
-	unsigned int& rd = (shortBuf ? shortBufLen : longBufLen);
+	unsigned int& rd = shortBufLen;//(shortBuf ? shortBufLen : longBufLen);
 	// Read samples from radio until the buffer is full
 	while (m_rxData.pos() < rd) {
 	    unsigned int samples = rd - m_rxData.pos();
@@ -3064,7 +3294,7 @@ static inline float energize(float cv, float div = 1)
 }
 
 // Send data to radio
-bool RadioIface::sendData(const ComplexVector& data)
+bool RadioIface::sendData(const ComplexVector& data, const GSMTime& time)
 {
     // Special case for loopback
     if (m_loopback) {
@@ -3073,40 +3303,27 @@ bool RadioIface::sendData(const ComplexVector& data)
 	    return true;
 	}
 	m_loopbackNextSend = Time::now() + m_loopbackSleep;
-	
-	RadioRxData* r = new RadioRxData(m_clock);
+	GSMTime t = time;
+	const ComplexVector* out = &data;
+	int outLen = data.length();
+	if (m_loopbackArray) {
+	    if (m_loopbackArray->length() == 1251) {
+		t.assign((*m_loopbackArray)[1250].real(),(*m_loopbackArray)[1250].imag());
+		Debug(DebugTest,"Loopback data set Time to %d %d",t.fn(),t.tn());
+		outLen = 1250;
+	    }
+	    // TODO add Loopback time
+	    out = m_loopbackArray;
+	}
+
+	RadioRxData* r = new RadioRxData(t);
 	r->m_data.assign(data.length());
-	for (unsigned int i = 0;i < data.length();i++) {
-	    /*r->m_data[i].set(0,0);
-	    if (i == 640) {
-		r->m_data[i++].set(2000,0);
-		r->m_data[i].set(2000,0);
-	    }
-	    if (i == 660) {
-		r->m_data[i].set(2000,0);
-	    }
-	    
-	    if (i == 681) {
-		r->m_data[i].set(2000,0);
-	    }*/
-	    /*if (i == 701)
-		r->m_data[i].set(2047,0);*/
-	    /*switch(i % 4) {
-		case 0:
-		    r->m_data[i].set(2047,0);
-		    break;
-		case 1:
-		    r->m_data[i].set(0,0);
-		    break;
-		case 2:
-		    r->m_data[i].set(-2047,0);
-		    break;
-		case 3:
-		    r->m_data[i].set(0,0);
-		    break;
-		    
-	    }*/
-	    r->m_data[i].set(energize(data[i].real()),energize(data[i].imag()));
+	Lock myLock(m_mutex);
+	unsigned int end = outLen;
+	if (data.length() < end)
+	    end = data.length();
+	for (unsigned int i = 0;i < end;i++) {
+	    r->m_data[i].set((*out)[i].real(),(*out)[i].imag());
 	}
 	transceiver()->recvRadioData(r);
 	return true;

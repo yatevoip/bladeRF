@@ -148,16 +148,14 @@ GSMTxBurst* GSMTxBurst::buildFiller()
 // GSMRxBurst
 //
 // Setup a buffer from burst
-unsigned int GSMRxBurst::buildEstimatesBuffer(int8_t* buf, unsigned int len)
+void GSMRxBurst::fillEstimatesBuffer()
 {
-    if (!buf || len < 8)
-	return 0;
+    uint8_t* buf = m_bitEstimate;
     // Buffer format:
     //   1 byte timeslot index
     //   4 bytes GSM frame number, big endian
     //   1 byte power level
     //   2 bytes correlator timing offset (timing advance error)
-    //   Symbol estimates, 0 -> definite "0", 255 -> definite "1"
     *buf++ = m_time.tn();
     *buf++ = (int8_t)(m_time.fn() >> 24);
     *buf++ = (int8_t)(m_time.fn() >> 16);
@@ -166,14 +164,6 @@ unsigned int GSMRxBurst::buildEstimatesBuffer(int8_t* buf, unsigned int len)
     *buf++ = (int8_t)m_powerLevel;
     *buf++ = (int8_t)((int)m_timingError >> 8);
     *buf++ = (int8_t)m_timingError;
-    len -= 8;
-    unsigned int n = len ? m_bitEstimate.length() : 0;
-    if (n > len)
-	n = len;
-    const float* c = m_bitEstimate.data();
-    for (unsigned int i = 0; i < n; i++, c++)
-	*buf++ = (int8_t)::round(*c * 255.0);
-    return n + 8;
 }
 
 /* vi: set ts=8 sw=4 sts=4 noet: */

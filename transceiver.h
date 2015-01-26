@@ -158,10 +158,31 @@ public:
      * @param time Burst time
      * @param c Pointer to data to dump
      * @param len The number of elements to dump
-     * @param dumpShort True to dump the short version
      */
     void dumpRecvBurst(const char* str, const GSMTime& time,
-	const Complex* c, unsigned int len, bool dumpShort);
+	const Complex* c, unsigned int len);
+
+    /**
+     * Dump RX Debug data
+     * @param prefix Data prefix
+     * @param index OMF or ARFCN index
+     * @param postfix Data name postfix
+     * @param c The data to dump
+     * @param len The data length
+     */
+    void dumpRxData(const char* prefix, unsigned int index, const char* postfix,
+	    const Complex* c, unsigned int len);
+    
+    /**
+     * Dump RX Debug data
+     * @param prefix Data prefix
+     * @param index OMF or ARFCN index
+     * @param postfix Data name postfix
+     * @param f The data to dump
+     * @param len The data length
+     */
+    void dumpRxData(const char* prefix, unsigned int index, const char* postfix,
+	    const float* f, unsigned int len);
 
 private:
     Transceiver* m_transceiver;          // The transceiver owning this object
@@ -276,11 +297,16 @@ struct ArfcnSlot
     inline ArfcnSlot()
 	: slot(0), type(0), modulus(26), burstType(0), warnRecvDrop(true)
 	{}
+
+    inline void addDelay(float d)
+	{ delay += (delay - d) / 100; }
+
     uint8_t slot;                        // Timeslot number
     int type;                            // Timeslot (channel) type
     int modulus;                         // Modulus (used to build idle slot filler) in frames
     int burstType;                       // Expected burst type
     bool warnRecvDrop;                   // Warn dropping recv frame
+    float delay;                         // Averege delay spread 
 };
 
 
@@ -455,18 +481,7 @@ public:
      * Set the minimum power to accept radio bursts
      * @param val New minimum power level to accept
      */
-    void setBurstMinPower(float val = 0);
-
-    /**
-     * Check the power level of a burst
-     * @param data Pointer to burst start
-     * @param len Burst length
-     * @return True if accepted, false to drop it
-     */
-    inline bool checkBurstMinPower(const Complex* data, unsigned int len) {
-	    return !m_burstMinPower ||
-		m_burstMinPower <= SignalProcessing::computePower(data,len,5,0.2);
-	}
+    void setBurstMinPower(int val = 0);
 
     /**
      * Get the number of configured arfcns
@@ -547,7 +562,12 @@ protected:
     Thread* m_radioOutThread;            // Worker (radio feeder) thread
     GenQueue m_rxQueue;                  // Pending radio data
     unsigned int m_oversamplingRate;     // Tranceiver oversampling rate
-    float m_burstMinPower;               // Minimum burst power level to accept
+    int m_burstMinPower;               // Minimum burst power level to accept
+    float m_snrThreshold;                // Signal to noise threshold
+    float m_wrtFullScaleThreshold;       // WRT Threshold
+    float m_peakOverMeanThreshold;       // Peak over mean threshold
+    int m_upPowerThreshold;              // Upper power level threshold
+    unsigned int m_maxPropDelay;         // Maximum RACH delay to try to track
     ARFCN** m_arfcn;                     // ARFCNs list
     unsigned int m_arfcnCount;           // The number of ARFCNs
     unsigned int m_arfcnConf;            // The number of configured ARFCNs
@@ -716,8 +736,8 @@ private:
     unsigned int m_halfBandFltCoeffLen;  // Half band filter coefficients length
     FloatVector m_halfBandFltCoeff;      // Half band filter coefficients vector
     unsigned int m_tscSamples;           // The number of TSC samples used to build the channel estimate
-    ComplexVector m_nbTSC[8];            // GSM Normal Burst TSC vectors
-    ComplexVector m_abSync;              // Access burst sync vector
+    FloatVector m_nbTSC[8];              // GSM Normal Burst TSC vectors
+    FloatVector m_abSync;                // Access burst sync vector
 };
 
 
@@ -918,6 +938,36 @@ public:
     static inline const char* burstType(int t)
 	{ return lookup(t,burstTypeName()); }
 
+    /**
+     * Add current noise level to averege
+     * @param current The curent noise level
+     */
+    void addAverageNoise(float current);
+    
+    /**
+     * Obtain the averege noise level
+     * @return The average noise level for this arfcn
+     */
+    float getAverageNoiseLevel()
+	{ return m_averegeNoiseLevel; }
+
+    /**
+     * Dump the delay spread for each slot
+     * @param dest The destination buffer for data to be dumped
+     */
+    void dumpSlotsDelay(String& dest);
+    
+    /**
+     * Add delaySpread to slot
+     * @param index Slot index
+     * @param delay The last delay spread 
+     */
+    inline void addSlotDelay(int index, float delay)
+    {
+	if (index > 7)
+	    return;
+	m_slots[index].addDelay(delay);
+    }
 protected:
     /**
      * Move expired and filler bursts filler table
@@ -981,6 +1031,7 @@ protected:
     ArfcnSlot m_slots[8];                // Channels
     uint64_t m_rxBursts;                 // Received bursts
     uint64_t m_rxDroppedBursts;          // Dropped Rx bursts
+    float m_averegeNoiseLevel;           // Averege noise level
 
 private:
     void dropRxBurst(const char* reason = 0, const GSMTime& t = GSMTime(),
@@ -1398,9 +1449,10 @@ public:
     /**
      * Send the data to the radio
      * @param data the data to be sent
+     * @param time Time of the data beeing sent, used for loopback
      * @return True if data was sent, false on fatal error
      */
-    virtual bool sendData(const ComplexVector& data);
+    virtual bool sendData(const ComplexVector& data, const GSMTime& time);
 
     /**
      * Get the radio clock
@@ -1503,6 +1555,18 @@ public:
     inline bool loopback() const
 	{ return m_loopback; }
 
+    /**
+     * Set / reset the loopback data
+     * @param loopback The loopback data
+     */
+    inline void setLoopbackArray(ComplexVector* loopback = 0)
+    {
+	Lock myLock(m_mutex);
+	if (m_loopbackArray)
+	    delete m_loopbackArray;
+	m_loopbackArray = loopback;
+    }
+
 protected:
     /**
      * Read data from radio
@@ -1573,6 +1637,7 @@ private:
     bool m_loopback;                     // Loopback mode flag
     int m_loopbackSleep;                 // Time to sleep between two consecutive bursts sent in loopback mode
     u_int64_t m_loopbackNextSend;        // Next time to send a loopback burst
+    ComplexVector* m_loopbackArray;      // Data to feed the RX part
 };
 
 }; // namespace TelEngine
