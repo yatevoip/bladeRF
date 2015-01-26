@@ -35,7 +35,7 @@ public:
 	{}
 
 	void initialize(const NamedList& params);
-	void dump(const ComplexArray& array);
+	void dump(const ComplexVector& array);
 	void dump(const FloatVector& array);
 	void loadCompare(String& data);
 
@@ -46,7 +46,7 @@ public:
 	int m_printLen;
 	bool m_append;
 	String m_format;
-	ComplexArray m_compare;
+	ComplexVector m_compare;
 	FloatVector m_fcompare;
 	bool m_isFloat;
 	bool m_printStats;
@@ -59,9 +59,9 @@ public:
 	QmfBlock(unsigned int index, unsigned int len, bool final, Configuration& cfg);
 
 	unsigned int m_index;
-	ComplexArray m_freqencyShift;
-	ComplexArray m_lowData;
-	ComplexArray m_highData;
+	ComplexVector m_freqencyShift;
+	ComplexVector m_lowData;
+	ComplexVector m_highData;
 	bool m_final;
 	DataComparator* m_fs;
 	DataComparator* m_x;
@@ -257,7 +257,7 @@ void DataComparator::initialize(const NamedList& params)
 		loadCompare(compare);
 }
 
-void DataComparator::dump(const ComplexArray& array)
+void DataComparator::dump(const ComplexVector& array)
 {
 	// Dump the data
 	String dump = m_prefix;
@@ -413,7 +413,7 @@ void DataComparator::loadCompare(String& data)
 	TelEngine::destruct(split);
 }
 
-static void qmf(QmfBlock* q, ComplexArray& dataIn)
+static void qmf(QmfBlock* q, ComplexVector& dataIn)
 {
 	Debug(DebugAll,"qmf for index %d",q->m_index);
 	if (q->m_x)
@@ -440,7 +440,7 @@ static void qmf(QmfBlock* q, ComplexArray& dataIn)
 			inLen, q->m_freqencyShift.length());
 		return;
 	}
-	ComplexArray xp(inLen);
+	ComplexVector xp(inLen);
 	String tmpu;
 	for (unsigned int i = 0;i < inLen;i++)
 		xp[i] = dataIn[i] * q->m_freqencyShift[i];
@@ -456,12 +456,12 @@ static void qmf(QmfBlock* q, ComplexArray& dataIn)
 	}
 	
 	// Calculate w
-	ComplexArray paddedXP(inLen + s_hqLength);
+	ComplexVector paddedXP(inLen + s_hqLength);
 	for (unsigned int i = 0;i < inLen;i++)
 	    paddedXP[i + s_n0] = xp[i];
 
 
-	ComplexArray w(inLen);
+	ComplexVector w(inLen);
 	for (unsigned int i = 0;i < w.length();i+=2) {
 		for (int j = 0;j < s_hqLength;j+=2) {
 			w[i] += paddedXP[i + j] * s_hq[j];
@@ -488,7 +488,7 @@ static void qmf(QmfBlock* q, ComplexArray& dataIn)
 	qmf(s_qmfs[2 * q->m_index + 2],q->m_highData);
 }
 
-float getPower(ComplexArray& dataIn)
+float getPower(ComplexVector& dataIn)
 {
 	unsigned int center = 148 / 2;
 	float power = 0;
@@ -497,7 +497,7 @@ float getPower(ComplexArray& dataIn)
 	return 0.2 * power;
 }
 
-float getNoisePower(ComplexArray& dataIn)
+float getNoisePower(ComplexVector& dataIn)
 {
 	// Use the gaurd interval for noise measurement.
 	unsigned int center = 148 / 2;
@@ -552,14 +552,14 @@ void checkHQ(NamedList& params)
 	printf("\nHQ: len %d\n%s\n",s_hqLength,dump.c_str());
 }
 
-ComplexArray* correlate(ComplexArray& in, FloatVector& h)
+ComplexVector* correlate(ComplexVector& in, FloatVector& h)
 {
-	ComplexArray padded(in.length() + h.length());
+	ComplexVector padded(in.length() + h.length());
 	unsigned int n0 = (h.length() - 1) / 2;
 	for (unsigned int i = 0;i < in.length();i++)
 		padded[i + n0] = in[i];
 
-	ComplexArray* out = new ComplexArray(in.length());
+	ComplexVector* out = new ComplexVector(in.length());
 	for (unsigned int i = 0;i < in.length();i++) {
 		for (unsigned int j = 0;j < h.length();j++) {
 			Complex c;
@@ -571,20 +571,20 @@ ComplexArray* correlate(ComplexArray& in, FloatVector& h)
 	return out;
 }
 
-ComplexArray* correlate(ComplexArray& in, ComplexArray& h)
+ComplexVector* correlate(ComplexVector& in, ComplexVector& h)
 {
-	ComplexArray padded(in.length() + h.length());
+	ComplexVector padded(in.length() + h.length());
 	unsigned int n0 = (h.length() - 1) / 2;
 	for (unsigned int i = 0;i < in.length();i++)
 		padded[i + n0] = in[i];
 	
-	ComplexArray conj(h.length());
+	ComplexVector conj(h.length());
 	for (unsigned int i = 0;i < h.length();i++) {
 		conj[i].real(h[i].real());
 		conj[i].imag(-h[i].imag());
 	}
 	
-	ComplexArray* out = new ComplexArray(in.length());
+	ComplexVector* out = new ComplexVector(in.length());
 	for (unsigned int i = 0;i < in.length();i++) {
 		for (unsigned int j = 0;j < h.length();j++) {
 			(*out)[i] += padded[i + j] * conj[j];
@@ -594,7 +594,7 @@ ComplexArray* correlate(ComplexArray& in, ComplexArray& h)
 }
 
 
-void demodcheck(ComplexArray& in, String name, Configuration& cfg,int arfcnIndex)
+void demodcheck(ComplexVector& in, String name, Configuration& cfg,int arfcnIndex)
 {
 	String arfcnPrefix(arfcnIndex);
 	arfcnPrefix << ".";
@@ -660,18 +660,18 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 
 
 	// DAB - This implements a -pi/2 frequency shift.
-	ComplexArray xf(inData->m_lowData.length());
+	ComplexVector xf(inData->m_lowData.length());
 	static const Complex s[] = {Complex(1,0), Complex(0,-1), Complex(-1,0), Complex(0,1)};
 	for (unsigned int i = 0; i < inData->m_lowData.length(); i++) {
 		xf[i] = s[i%4] * inData->m_lowData[i];
 	}
 	
 	// Channel Estimation
-	ComplexArray* he = 0;
+	ComplexVector* he = 0;
 	int center;
 	if (s_normalBurst) {
 		// isolate the recevied midamble
-		ComplexArray x(26);
+		ComplexVector x(26);
 		int startIndex = inData->m_lowData.length() / 2 - 13;
 		int endIndex = startIndex + 26;
 		int index = 0;
@@ -698,7 +698,7 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 	} else {
 		// isolate the synchronization sequence, plus up to 63 samples of delay
 		unsigned xlen = 41+s_maxPropDelay;
-		ComplexArray x(xlen);
+		ComplexVector x(xlen);
 		int index = 0;
 		for (unsigned int i = 8; i < xlen + 8;i++,index++)
 			x[index] = xf[i];
@@ -770,7 +770,7 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 	// This shifts the signal so that the max power image is aligned to the expected position.
 	// The alignment error is +/- 1/2 symbol period;
 	// fractional alignment is corrected by correlation with channel estaimte.
-	ComplexArray xf2(xf.length());
+	ComplexVector xf2(xf.length());
 	for (int i=0; i<xf.length(); i++) {
 		int j = i + toaError;
 		if (j<0) 
@@ -783,7 +783,7 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 	// Trim and center the channel estimate.
 	// This shifts the channel estimate to put the max power peak in the center, +/- 1/2 symbol period.
 	// The alignment error of heTrim is exactly the opposiate of the alignment error of xf2.
-	ComplexArray heTrim(11);
+	ComplexVector heTrim(11);
 	for (unsigned i=0; i<11; i++) {
 		int j = maxIndex - 5 + i;
 		if (j<0 || j>= (he->length())) continue;
@@ -830,15 +830,15 @@ void demodulate(QmfBlock* inData, Configuration& cfg,int arfcnIndex)
 	FloatVector u(xf2.length());
 	{
 		// This correlation against the channel model serves as our equalizer.
-		ComplexArray* w = correlate(xf2,heTrim);
-		TelEngine::destruct(he);
+		ComplexVector* w = correlate(xf2,heTrim);
+		delete he;
 	
 		// The imaginary part is just noise at this point.
 		// All of the decodable signal power is in the real part.
 		for (unsigned i = 0; i < u.length();i++) {
 			u[i] = (*w)[i].real();
 		}
-		TelEngine::destruct(w);
+		delete w;
 	}
 
 	NamedList* dv = cfg.getSection("demod-u");
@@ -954,7 +954,7 @@ extern "C" int main(int argc, const char** argv, const char** envp)
 		return 0;
 	}
 	
-	ComplexArray ind(indc->m_compare.length());
+	ComplexVector ind(indc->m_compare.length());
 	// Pad the data with zeros
 	// For testing, shift the input data by a given number of samples.
 	// And and add an optional multipath image at a level of imageGain/10.
@@ -990,7 +990,7 @@ extern "C" int main(int argc, const char** argv, const char** envp)
 	
 	if (!s_qmfs[7]->m_lowData.length()) {
 	    Debug(DebugWarn,"failed to apply QMF filter for Arfcn 0");
-	    return;
+	    return 0;
 	}
 	
 	demodulate(s_qmfs[7],s_cfg,0);
