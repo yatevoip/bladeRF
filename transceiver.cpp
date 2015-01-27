@@ -1312,6 +1312,8 @@ bool Transceiver::command(const char* str, String* rsp, unsigned int arfcn)
 	Debug(this,DebugNote,"Command '%s' (ARFCN=%u) failed in state %s: %d %s [%p]",
 	    str,arfcn,trxStateName(state()),status,
 	    reason.safe(lookup(status,s_cmdErrorName,"failure")),this);
+    else
+	Debug(this,DebugAll,"Command '%s' (ARFCN=%u) RSP '%s'",str,arfcn,rspParam.c_str());
     syncGSMTime();
     return buildCmdRsp(rsp,cmd,status,rspParam);
 }
@@ -1561,6 +1563,7 @@ bool Transceiver::syncGSMTime()
     m_nextClockUpdTime = m_txTime;
     m_nextClockUpdTime.advance(216);
     tmp << (m_txTime.fn() + 2);
+    Debug(this,DebugTest,"Sync GSM Time %s",tmp.c_str());
     if (m_clockIface.m_socket.valid()) {
 	if (m_clockIface.writeSocket(tmp.c_str(),tmp.length(),*this) > 0)
 	    return true;
@@ -2010,6 +2013,8 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
 
     // Calculate Signal to Noise ratio
     float SNR = power/noise;
+    b.m_powerLevel = 10 * ::log10f(power);
+
 
     if (SNR < m_snrThreshold) {
 	// Discard Burst low SNR
@@ -2017,14 +2022,14 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
 	return false;
     }
 
-    b.m_powerLevel = 10 * ::log10f(power);
 
     if (b.m_powerLevel < m_burstMinPower) {
 	a->dropRxBurst("low power",t,len,DebugAll,false);
 	return false;
     }
-    Debug(a,DebugAll,"processRadioBurst ARFCN %d Slot %d. Level %f, noise %f, SNR %f powerDb %g",
-	   arfcn,slot.slot,power, noise, SNR,b.m_powerLevel);
+    
+    Debug(a,DebugAll,"processRadioBurst ARFCN %d FN %d TN %d Hi %d. Level %f, noise %f, SNR %f powerDb %g low SNR %s lowPower %s",
+	   arfcn, t.fn(),slot.slot,t.fn() % 51,power, noise, SNR,b.m_powerLevel,String::boolText(SNR < m_snrThreshold),String::boolText(b.m_powerLevel < m_burstMinPower));
 
     if  (b.m_powerLevel > m_upPowerThreshold) 
 	Debug(a,DebugInfo, "Receiver clipping on ARFCN %d Slot %d, %f dB", arfcn, slot.slot, b.m_powerLevel);
@@ -2364,7 +2369,7 @@ void TransceiverQMF::qmf(const GSMTime& time, unsigned int index)
     tmp3 << "QMF[" << index << "] built half band filter";
     dumpRecvBurst(tmp3,time,crt.halfBandFilter.data(),crt.halfBandFilter.length());
 #endif
-    dumpRxData("qmf[",index,"].xp",crt.halfBandFilter.data(),crt.halfBandFilter.length());
+    dumpRxData("qmf[",index,"].w",crt.halfBandFilter.data(),crt.halfBandFilter.length());
     
     if (indexLo >= 0 && !thShouldExit(this)) {
 	qmfBuildOutputLowBand(crt,m_qmf[indexLo].data);
