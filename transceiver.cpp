@@ -57,7 +57,8 @@
 //#define TRANSCEIVER_DUMP_RX_DEBUG
 // Dump only the input vector and the output data for RX
 //#define TRANSCEIVER_DUMP_RX_INPUT_OUTPUT
-
+// Dump Demodulator performance
+#define TRANSCEIVER_DUMP_DEMOD_PERF
 
 // Minimum data length for radio Rx burst to be processed by an ARFCN
 #define ARFCN_RXBURST_LEN 156
@@ -2186,6 +2187,34 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
 	    dump << b.m_bitEstimate[i] << ",";
 	::printf("\noutput-data:%d:%s\n",arfcn,dump.c_str());
     }
+#ifdef TRANSCEIVER_DUMP_DEMOD_PERF
+    uint8_t burst[148];
+    bool notified = false;
+    for (int i = 8;i < ARFCN_RXBURST_LEN;i++) {
+	burst[i - 8] = (b.m_bitEstimate[i] < 128 ? 0 : 1);
+	if (b.m_bitEstimate[i] > 32 && b.m_bitEstimate[i] < 196 && !notified) {
+	    Debug(a,DebugNote,"Poor demodulator performance! FN %d TN %d Hi %d",t.fn(),t.tn(),t.fn() % 51);
+	    notified = true;
+	}
+    }
+    //const int8_t* table = GSMUtils::nbTscTable();
+    const int8_t *ts = GSMUtils::nbTscTable();
+    ts +=  + (GSM_NB_TSC_LEN * m_tsc);
+    uint8_t *bp = burst + 61;
+    bool tsNotif = false;
+    for (unsigned int i = 0;i < GSM_NB_TSC_LEN;i++) {
+	if (ts[i] == bp[i])
+	    continue;
+	String t1,t2;
+	t1.hexify((void*)ts,GSM_NB_TSC_LEN,' ');
+	t2.hexify(bp,GSM_NB_TSC_LEN,' ');
+	Debug(a,DebugInfo,"Wrong Training Sequence! FN %d TN %d HI %d\nsequence:%s\nburst   :%s",t.fn(),t.tn(),t.fn() % 51,t1.c_str(),t2.c_str());
+	tsNotif = true;
+	break;
+    }
+    Debug(a,DebugAll,"Processed RX burst! Good Demod Performance %s Valid Training Seq %s",
+	String::boolText(!notified),String::boolText(!tsNotif));
+#endif
     return true;
 }
 
