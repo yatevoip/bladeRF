@@ -321,6 +321,7 @@ private:
     // Test data
     Mutex m_dumpMutex;                   // Mutex used to block dump operations
     BladeRFDump* m_txDump;               // Dump data object for TX
+    unsigned int m_loopbackFreq;         // Test loopback frequency
 };
 
 /**

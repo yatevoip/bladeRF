@@ -328,7 +328,8 @@ BrfIface::BrfIface()
     m_modulated(false),
     m_predefinedData(0),
     m_dumpMutex(true,s_dumpMutexName),
-    m_txDump(0)
+    m_txDump(0),
+    m_loopbackFreq(0)
 {
     setSpeed(false);
     initTestData();
@@ -444,7 +445,7 @@ bool BrfIface::readRadio(RadioIOData& data, unsigned int* samples)
     BRF_RX_SERIALIZE_ON_RET(false,true);
     if (!flag(BrfRxOn)) {
 	Debug(this,DebugNote,"%sCan't read: Rx module not enabled [%p]",
-	    prefix(),this);
+		prefix(),this);
 	return true;
     }
 #ifdef BRF_DEBUG_RECV
@@ -781,6 +782,7 @@ bool BrfIface::open(const NamedList& params)
 	if (!(setBandwith(true,code,what,BANDWIDTH,&rxBw) &&
 	    setBandwith(false,code,what,BANDWIDTH,&txBw)))
 	    break;
+	m_loopbackFreq = params.getIntValue(YSTRING("loopback-freq"),0);
 	// Init sync I/O timeouts
 	unsigned int tout = getUInt(params,YSTRING("io_timeout"),500,Thread::idleMsec());
 	m_rxData.syncIOWait(tout);
@@ -1065,6 +1067,8 @@ bool BrfIface::setVCTCXO(unsigned int val, bool safe)
 bool BrfIface::setFreq(bool rx, unsigned int hz, unsigned int vctcxo, bool safe)
 {
     BRF_TX_SERIALIZE_ON_RET(safe,false);
+    if (m_loopbackFreq)
+	hz = m_loopbackFreq;
     int ok = ::bladerf_set_frequency(m_dev,rxtxmod(rx),hz);
     if (ok < 0) {
 	Debug(this,DebugGoOn,"%sFailed to set %s frequency %uHz: %d %s [%p]",
