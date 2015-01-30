@@ -58,7 +58,7 @@
 // Dump only the input vector and the output data for RX
 //#define TRANSCEIVER_DUMP_RX_INPUT_OUTPUT
 // Dump Demodulator performance
-#define TRANSCEIVER_DUMP_DEMOD_PERF
+//#define TRANSCEIVER_DUMP_DEMOD_PERF
 
 // Minimum data length for radio Rx burst to be processed by an ARFCN
 #define ARFCN_RXBURST_LEN 156
@@ -113,7 +113,7 @@ public:
     {
 	m_data.resize(v.length());
 	for (unsigned int i = 0;i < v.length();i++) {
-	    m_data[i] = v[i];
+	    m_data[i].set(v[i].real(),v[i].imag());
 	}
 	m_time = t;
     }
@@ -160,12 +160,73 @@ public:
     }
 };
 
+class FileDataDumper : public Thread
+{
+public:
+    FileDataDumper(const String& fileName);
+    void addData(const ComplexVector& v);
+    inline void exit() 
+	{ m_exit = true; }
+protected:
+    virtual void run();
+private:
+    ObjList m_list;
+    String m_fileName;
+    Mutex m_mutex;
+    bool m_exit;
+};
+
+FileDataDumper::FileDataDumper(const String& fileName)
+    : m_fileName(fileName),m_exit(false)
+{
+    
+}
+
+void FileDataDumper::addData(const ComplexVector& v)
+{
+    static int s_counter = 0;
+    s_counter++;
+    if ((s_counter % 1001) != 0)
+	return;
+    s_counter = 0;
+    static GSMTime t;
+    Lock myLock(m_mutex);
+    m_list.append(new RxInData(v,t));
+}
+
+void FileDataDumper::run()
+{
+    File f;
+    if (!f.openPath(m_fileName,true,false,true)) {
+	Debug(DebugNote,"Unable to open dump file %s",m_fileName.c_str());
+	return;
+    }
+    while (!m_exit) {
+	Lock myLock(m_mutex);
+	ObjList* o = m_list.skipNull();
+	if (!o) {
+	    Thread::msleep(5);
+	    continue;
+	}
+	RxInData* in = static_cast<RxInData*>(o->remove(false));
+	myLock.drop();
+	String s;
+	Complex::dump(s,in->m_data.data(),in->m_data.length());
+	f.writeData(s.c_str(),s.length());
+	static const char* t = "\n\n";
+	f.writeData(t,2);
+	TelEngine::destruct(in);
+    }
+    Debug(DebugTest,"Data write finished!");
+}
+
 /** TODO NOTE 
  * End test code */
 
 
 ObjList TrxWorker::s_threads;
 Mutex TrxWorker::s_mutex(false,"TrxWorkers");
+static FileDataDumper* s_dumper = 0;
 
 const TokenDict TrxWorker::s_name[] = {
     {"ARFCNData",     ARFCNData},
@@ -186,20 +247,6 @@ const TokenDict TrxWorker::s_info[] = {
     {"Radio device read",      RadioRead},
     {0,0},
 };
-
-static String& dumpAppendFloat(String& dest, const float& val, const char* sep = 0)
-{
-    char s[80];
-    sprintf(s,"%g",val);
-    return dest.append(s,sep);
-}
-
-static String& dumpAppendComplex(String& dest, const Complex& val, const char* sep)
-{
-    char s[170];
-    sprintf(s,"%g%+gi",val.real(),val.imag());
-    return dest.append(s,sep);
-}
 
 bool TrxWorker::create(Thread*& th, int type, TransceiverObj* o)
 {
@@ -380,7 +427,8 @@ enum Command
     CmdPowerOn,
     CmdPowerOff,
     CmdCustom,
-    CmdManageTx
+    CmdManageTx,
+    CmdNoise
 };
 
 static const TokenDict s_cmdName[] = {
@@ -398,6 +446,7 @@ static const TokenDict s_cmdName[] = {
     {"POWEROFF",    CmdPowerOff},
     {"CUSTOM",      CmdCustom},
     {"MANAGETX",    CmdManageTx},
+    {"NOISELEV",    CmdNoise},
     {0,0}
 };
 
@@ -880,7 +929,7 @@ Transceiver::Transceiver(const char* name)
     m_arfcnCount(0),
     m_arfcnConf(0),
     m_clockIface("clock"),
-    m_startTime((uint32_t)Random::random()),
+    m_startTime(0),
     m_clockUpdMutex(false,"TrxClockUpd"),
     m_txLatency(2),
     m_tsc(0),
@@ -956,6 +1005,13 @@ bool Transceiver::init(RadioIface* radio, const NamedList& params)
 	if (!m_radio->init(rParams))
 	    break;
 	ok = true;
+	// TODO test
+	String* dumpFile = params.getParam(YSTRING("dump_file"));
+	if (dumpFile) {
+	    s_dumper = new FileDataDumper(params.getValue("dump_file"));
+	    s_dumper->startup();
+	}
+	// TODO end test
 	break;
     }
     if (!ok) {
@@ -1038,7 +1094,6 @@ void Transceiver::runRadioDataProcess()
     TelEngine::destruct(gen);
 }
 
-/*
 void Transceiver::runRadioSendData()
 {
     if (!m_radio)
@@ -1099,8 +1154,8 @@ void Transceiver::runRadioSendData()
 	if (!wait)
 	    radioTime = endRadioTime;
     }
-}*/
-
+}
+/*
 void Transceiver::runRadioSendData()
 {
     if (!m_radio)
@@ -1127,7 +1182,7 @@ void Transceiver::runRadioSendData()
 	fatalError();
 	break;
     }
-}
+}*/
 
 bool Transceiver::sendBurst(GSMTime& time)
 {
@@ -1151,7 +1206,7 @@ bool Transceiver::sendBurst(GSMTime& time)
 	else {
 	    Lock myLock(m_testMutex);
 	    if (m_txTestBurst && !m_txTestBurst->txData().length() &&
-		!m_txTestBurst->buildTxData(a->arfcn(),m_signalProcessing).length())
+		    !m_txTestBurst->buildTxData(a->arfcn(),m_signalProcessing).length())
 		TelEngine::destruct(m_txTestBurst);
 	    if (m_txTestBurst)
 		SignalProcessing::sum(m_sendBurstBuf,m_txTestBurst->txData(),first);
@@ -1306,6 +1361,21 @@ bool Transceiver::command(const char* str, String* rsp, unsigned int arfcn)
 	case CmdManageTx: // NOTE: this command is just for test
 	    handleCmdManageTx(arfcn,s,&rspParam);
 	    break;
+	case CmdNoise:
+	{
+	    
+	    String dump;
+	    for (unsigned int i = 0;i < m_arfcnCount;i++) {
+		dump << "ARFCN: ";
+		dump <<  i;
+		dump << ": noise: ";
+		dump << (int)m_arfcn[i]->getAverageNoiseLevel();
+		dump << " ; ";
+	    }
+	    Debug(this,DebugNote,"%s",dump.c_str());
+	    rspParam << (int)-m_arfcn[0]->getAverageNoiseLevel();
+	    break;
+	}
 	default:
 	    status = CmdEUnkCmd;
     }
@@ -1564,7 +1634,6 @@ bool Transceiver::syncGSMTime()
     m_nextClockUpdTime = m_txTime;
     m_nextClockUpdTime.advance(216);
     tmp << (m_txTime.fn() + 2);
-    Debug(this,DebugTest,"Sync GSM Time %s",tmp.c_str());
     if (m_clockIface.m_socket.valid()) {
 	if (m_clockIface.writeSocket(tmp.c_str(),tmp.length(),*this) > 0)
 	    return true;
@@ -1873,7 +1942,7 @@ int Transceiver::handleCmdCustom(String& cmd, String* rspParam, String* reason)
 	    dump << "ARFCN: ";
 	    dump <<  i;
 	    dump << ": average noise level: ";
-	    dumpAppendFloat(dump,m_arfcn[i]->getAverageNoiseLevel());
+	    SigProcUtils::appendFloat(dump,m_arfcn[i]->getAverageNoiseLevel(),"");
 	    dump << " ; ";
 	}
 	*rspParam << dump;
@@ -1882,6 +1951,14 @@ int Transceiver::handleCmdCustom(String& cmd, String* rspParam, String* reason)
 	String dump;
 	for (unsigned int i = 0;i < m_arfcnCount;i++) 
 	    m_arfcn[i]->dumpSlotsDelay(*rspParam);
+    } else if (cmd.startSkip("file-dump ",false)) {
+	s_dumper = new FileDataDumper(cmd);
+	s_dumper->startup();
+	return CmdEOk;
+    } else if (cmd == YSTRING("file-dump")) {
+	s_dumper->exit();
+	s_dumper = 0;
+	return CmdEOk;
     }
     if (m_radio)
 	return m_radio->command(cmd,rspParam,reason);
@@ -2008,9 +2085,14 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
     
     // Use the last 4 samples of the input data (guard period) to calculate the noise level
     float noise = SignalProcessing::computePower(b.m_data.data(),
-	b.m_data.length(),4,0.25,b.m_data.length() - 4);
+	b.m_data.length(),2,0.5,b.m_data.length() - 2);
 
-    a->addAverageNoise(noise);
+    noise += SignalProcessing::computePower(b.m_data.data(),
+	b.m_data.length(),2,0.5,0);
+    
+    noise /= 2;
+
+    a->addAverageNoise(10 * ::log10f(noise));
 
     // Calculate Signal to Noise ratio
     float SNR = power/noise;
@@ -2029,7 +2111,7 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
 	return false;
     }
     
-    Debug(a,DebugAll,"processRadioBurst ARFCN %d FN %d TN %d Hi %d. Level %f, noise %f, SNR %f powerDb %g low SNR %s lowPower %s",
+    DDebug(a,DebugAll,"processRadioBurst ARFCN %d FN %d TN %d Hi %d. Level %f, noise %f, SNR %f powerDb %g low SNR %s lowPower %s",
 	   arfcn, t.fn(),slot.slot,t.fn() % 51,power, noise, SNR,b.m_powerLevel,String::boolText(SNR < m_snrThreshold),String::boolText(b.m_powerLevel < m_burstMinPower));
 
     if  (b.m_powerLevel > m_upPowerThreshold) 
@@ -2080,7 +2162,7 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
 	return false;
     }
     float peakOverMean = max / rms;
-    Debug(a,DebugAll,"ARFCN %d Slot %d. chan max %f @ %d, rms %f, peak/mean %f", 
+    DDebug(a,DebugAll,"ARFCN %d Slot %d. chan max %f @ %d, rms %f, peak/mean %f", 
 		arfcn,slot.slot,max, maxIndex, rms, peakOverMean);
     if (peakOverMean < m_peakOverMeanThreshold) {
 	a->dropRxBurst("low peak / min",t,len,DebugInfo,false);
@@ -2169,7 +2251,7 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
 	    b.m_bitEstimate[i] = (uint8_t)::round((vi + 1.0F) * 0.5 * 255);
     }
 
-    bool printOutput = true;
+    bool printOutput = false;
 #ifdef TRANSCEIVER_DUMP_RX_DEBUG
     printOutput = true;
 #endif
@@ -2190,13 +2272,18 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
 #ifdef TRANSCEIVER_DUMP_DEMOD_PERF
     uint8_t burst[148];
     bool notified = false;
+    unsigned int count = 0;
     for (int i = 8;i < ARFCN_RXBURST_LEN;i++) {
 	burst[i - 8] = (b.m_bitEstimate[i] < 128 ? 0 : 1);
-	if (b.m_bitEstimate[i] > 32 && b.m_bitEstimate[i] < 196 && !notified) {
-	    Debug(a,DebugNote,"Poor demodulator performance! FN %d TN %d Hi %d",t.fn(),t.tn(),t.fn() % 51);
-	    notified = true;
+	if (b.m_bitEstimate[i] > 32 && b.m_bitEstimate[i] < 196) {
+	    if (!notified)
+		notified = true;
+	    count ++;
 	}
     }
+    if (notified)
+	Debug(a,DebugNote,"Poor demodulator performance! FN %d TN %d Hi %d uncerten values %d",t.fn(),t.tn(),t.fn() % 51,count);
+
     //const int8_t* table = GSMUtils::nbTscTable();
     const int8_t *ts = GSMUtils::nbTscTable();
     ts +=  + (GSM_NB_TSC_LEN * m_tsc);
@@ -2212,8 +2299,10 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
 	tsNotif = true;
 	break;
     }
-    Debug(a,DebugAll,"Processed RX burst! Good Demod Performance %s Valid Training Seq %s",
-	String::boolText(!notified),String::boolText(!tsNotif));
+    Debug(a,DebugAll,"Processed RX burst! Good Demod Performance %s Valid Training Seq %s power %f",
+	String::boolText(!notified),String::boolText(!tsNotif),b.m_powerLevel);
+    if (!notified && !tsNotif)
+	Debug(DebugTest,"Got good burst!!FN %d TN %d HI %d",t.fn(),t.tn(),t.fn() % 51);
 #endif
     return true;
 }
@@ -2341,6 +2430,12 @@ void TransceiverQMF::qmf(const GSMTime& time, unsigned int index)
     QmfBlock& crt = m_qmf[index];
     if (!(crt.chans && crt.data.data() && crt.data.length()))
 	return;
+
+    if (index == 0 && s_dumper) {
+	s_dumper->addData(crt.data);
+	return;
+    }
+
     bool final = (index > 6);
     int indexLo = -1;
     int indexHi = -1;
@@ -2560,6 +2655,7 @@ ARFCN::ARFCN()
     m_chans(0),
     m_rxBursts(0),
     m_rxDroppedBursts(0),
+    m_averegeNoiseLevel(0),
     m_arfcn(0),
     m_txMutex(false,"ARFCNTx")
 {
@@ -2943,7 +3039,7 @@ void ARFCN::dumpSlotsDelay(String& dest)
 	dest << "s:";
 	dest << i;
 	dest << ";ds:";
-	dumpAppendFloat(dest,m_slots[i].delay);
+	SigProcUtils::appendFloat(dest,m_slots[i].delay,"");
 	if (i != 7)
 	    dest << ";";
     }
@@ -3282,6 +3378,8 @@ void RadioIface::runReadRadio()
 	    consumed -= n;
 	    Lock lck(m_clockMutex);
 	    m_clock.incTn();
+	    lck.drop();
+	    signalSendTx();
 	}
 	m_rxData.consumed(m_rxData.samples() - consumed);
 	signalSendTx();
@@ -3330,6 +3428,23 @@ static inline float energize(float cv, float div = 1)
 // Send data to radio
 bool RadioIface::sendData(const ComplexVector& data, const GSMTime& time)
 {
+    int16_t fillValue = 0;
+    if (s_dumper) {
+	switch (time.tn() % 4) {
+	    case 0:
+		fillValue = 0;
+		break;
+	    case 1:
+		fillValue = 2047;
+		break;
+	    case 2:
+		fillValue = 0;
+		break;
+	    case 3:
+		fillValue = -2047;
+		break;
+	}
+    }
     // Special case for loopback
     if (m_loopback) {
 	if (m_loopbackNextSend > Time::now()) {
@@ -3380,6 +3495,11 @@ bool RadioIface::sendData(const ComplexVector& data, const GSMTime& time)
 	len -= n;
 	m_txData.advance(n);
 	for (int i = 0; n; n--, c++,i++) {
+	    if (s_dumper) {
+		*b++ = fillValue;
+		*b++ = fillValue;
+		continue;
+	    }
 	    if (!haveTest) {
 		*b++ = (int16_t)::round(energize(c->real(),f));
 		*b++ = (int16_t)::round(energize(c->imag(),f));
