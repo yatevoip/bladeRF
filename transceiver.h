@@ -42,6 +42,8 @@ class RadioIOData;                       // Radio Rx/Tx buffer and related data
 class RadioIface;                        // Transceiver radio interface
 class TransceiverWorker;                 // Private worker thread
 
+//#define CALLGRIND_CHECK
+
 /**
  * This class implements a generic queue
  * @short A generic queue
@@ -1603,6 +1605,9 @@ protected:
      * @return True on success, false to stop
      */
     inline bool updateError(bool rx, bool ok, bool setTrxError = true) {
+#ifdef CALLGRIND_CHECK
+	    ok = true;
+#endif
 	    ok = ok ? m_rxErrors.update(ok) : m_txErrors.update(ok);
 	    if (ok)
 		return ok;

@@ -189,7 +189,6 @@ void SignalProcessing::convolution(ComplexVector& out, const ComplexVector& fVec
     Complex* x = out.data();
     unsigned int Lp_1 = gVect.length() / 2;
     const Complex* parseF = fVect.data();
-    const unsigned int endMark = gVect.length() - 1;
     for (unsigned int n = 0;n < out.length(); n++, ++x, ++parseF) {
 	const Complex* f = parseF;
 	const Complex* fe = parseF + gVect.length();

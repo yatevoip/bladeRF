@@ -135,16 +135,23 @@ static void startTransceiver(int argc, const char** argv)
     if (!s_trx)
 	s_trx = new LocalTransceiver();
     if (s_trx->init(radio,p)) {
-	if (s_trx->start()) {
+	bool hardcodeInit = false;
 #ifdef HAVE_TEST
-	    s_trx->command("CMD RXTUNE 825000");
-	    s_trx->command("CMD TXTUNE 870000");
-	    s_trx->command("CMD POWERON");
-	    // TEST: Configure slots
-	    for (unsigned int i = 0; i < s_trx->arfcnCount(); i++)
-		for (int j = 0; j < 8; j++)
-		    s_trx->command("CMD SETSLOT " + String(j) + " 1",0,i);
+	hardcodeInit = true;
 #endif
+#ifdef CALLGRIND_CHECK
+	hardcodeInit = true;
+#endif
+	if (s_trx->start()) {
+	    if (hardcodeInit) {
+		s_trx->command("CMD RXTUNE 825000");
+		s_trx->command("CMD TXTUNE 870000");
+		s_trx->command("CMD POWERON");
+		// TEST: Configure slots
+		for (unsigned int i = 0; i < s_trx->arfcnCount(); i++)
+		    for (int j = 0; j < 8; j++)
+			s_trx->command("CMD SETSLOT " + String(j) + " 1",0,i);
+	    }
 	    return;
 	}
 	s_code = 2;

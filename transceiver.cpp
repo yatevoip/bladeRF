@@ -1094,6 +1094,7 @@ void Transceiver::runRadioDataProcess()
     TelEngine::destruct(gen);
 }
 
+#ifndef CALLGRIND_CHECK
 void Transceiver::runRadioSendData()
 {
     if (!m_radio)
@@ -1155,7 +1156,9 @@ void Transceiver::runRadioSendData()
 	    radioTime = endRadioTime;
     }
 }
-/*
+
+#else
+
 void Transceiver::runRadioSendData()
 {
     if (!m_radio)
@@ -1182,7 +1185,8 @@ void Transceiver::runRadioSendData()
 	fatalError();
 	break;
     }
-}*/
+}
+#endif
 
 bool Transceiver::sendBurst(GSMTime& time)
 {
@@ -1199,6 +1203,13 @@ bool Transceiver::sendBurst(GSMTime& time)
 	    burst = a->m_fillerTable.get(time);
 	    addFiller = false;
 	}
+#ifdef CALLGRIND_CHECK
+	if (!addFiller) {
+	    addFiller = true;
+	    burst = GSMTxBurst::buildFiller();
+	    burst->buildTxData(a->arfcn(),m_signalProcessing);
+	}
+#endif
 	if (!burst)
 	    continue;
 	if (!m_txTestBurst || a->arfcn() != 0)
@@ -1635,8 +1646,10 @@ bool Transceiver::syncGSMTime()
     m_nextClockUpdTime.advance(216);
     tmp << (m_txTime.fn() + 2);
     if (m_clockIface.m_socket.valid()) {
-	if (m_clockIface.writeSocket(tmp.c_str(),tmp.length(),*this) > 0)
+	if (m_clockIface.writeSocket(tmp.c_str(),tmp.length(),*this) > 0) {
+	    DDebug(this,DebugInfo,"Updating GSM Time %s",tmp.c_str());
 	    return true;
+	}
     }
     else
 	Debug(this,DebugFail,"Clock interface is invalid [%p]",this);
@@ -2101,14 +2114,17 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
 
     if (SNR < m_snrThreshold) {
 	// Discard Burst low SNR
+#ifndef CALLGRIND_CHECK
 	a->dropRxBurst("low SNR",t,len,DebugInfo,false);
 	return false;
+#endif
     }
 
-
     if (b.m_powerLevel < m_burstMinPower) {
+#ifndef CALLGRIND_CHECK
 	a->dropRxBurst("low power",t,len,DebugAll,false);
 	return false;
+#endif
     }
     
     DDebug(a,DebugAll,"processRadioBurst ARFCN %d FN %d TN %d Hi %d. Level %f, noise %f, SNR %f powerDb %g low SNR %s lowPower %s",
@@ -2165,8 +2181,10 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
     DDebug(a,DebugAll,"ARFCN %d Slot %d. chan max %f @ %d, rms %f, peak/mean %f", 
 		arfcn,slot.slot,max, maxIndex, rms, peakOverMean);
     if (peakOverMean < m_peakOverMeanThreshold) {
+#ifndef CALLGRIND_CHECK
 	a->dropRxBurst("low peak / min",t,len,DebugInfo,false);
 	return false;
+#endif
     }
     
     
@@ -2539,10 +2557,13 @@ void TransceiverQMF::qmfBuildHalfBandFilter(QmfBlock& b)
     
     unsigned int end = b.data.length() - n0;
     end += b.data.length() % 2;
+    
     for (unsigned int i = n0;i < end; i += 2, w += 2) {
 	(*w).set(0,0);
-	for (unsigned int j = 0;j < n0_2;j += 2)
-	    Complex::sumMulF(*w,x[i + j - substract],h[j]);
+	Complex* wx = &x[i - substract];
+	float* wh = h;
+	for (unsigned int j = 0;j < n0_2;j += 2, wx += 2,wh += 2)
+	    Complex::sumMulF(*w,(*wx),(*wh));
     }
 
     for (unsigned int i = end;i < b.data.length(); i += 2, w += 2) {
@@ -3220,6 +3241,10 @@ RadioIface::RadioIface()
     
 {
     m_txSynchronizer.lock();
+#ifdef CALLGRIND_CHECK
+    m_loopback = true;
+    m_loopbackSleep = 1000;
+#endif
 }
 
 // Initialize radio
@@ -3501,8 +3526,8 @@ bool RadioIface::sendData(const ComplexVector& data, const GSMTime& time)
 		continue;
 	    }
 	    if (!haveTest) {
-		*b++ = (int16_t)::round(energize(c->real(),f));
-		*b++ = (int16_t)::round(energize(c->imag(),f));
+		*b++ = (int16_t)energize(c->real(),f);
+		*b++ = (int16_t)energize(c->imag(),f);
 		continue;
 	    }
 	    *b++ = m_testValue;
