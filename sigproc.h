@@ -439,6 +439,16 @@ public:
 	{ c.set(c.real() + c1.real() * f,c.imag() + c1.imag() * f); }
 
     /**
+     * Calculate : c = c + (c1 + c2) * f
+     * @param c Destination number
+     * @param c1 First complex number
+     * @param c2 Second complex number
+     * @param f Float number to multiply
+     */
+    static inline void sumMulFSum(Complex& c, const Complex& c1,const Complex& c2, float f)
+	{ c.set(c.real() + (c1.real() + c2.real()) * f,c.imag() + (c1.imag() + c2.imag()) * f);}
+
+    /**
      * Compute the difference of two complex numbers
      * @param dest Destination number
      * @param c1 First number
