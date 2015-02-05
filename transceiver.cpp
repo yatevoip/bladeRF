@@ -102,21 +102,17 @@ protected:
 };
 
 /** TODO NOTE 
- * The following conde is for testing purpose */
+ * The following code is for testing purpose
+ */
 static ObjList s_indata;
 static Mutex s_inDataLoker;
 
 class RxInData : public GenObject
 {
 public:
-    RxInData(const ComplexVector& v, const GSMTime& t)
-    {
-	m_data.resize(v.length());
-	for (unsigned int i = 0;i < v.length();i++) {
-	    m_data[i].set(v[i].real(),v[i].imag());
-	}
-	m_time = t;
-    }
+    inline RxInData(const ComplexVector& v, const GSMTime& t)
+	: m_data(v), m_time(t)
+    {}
     ComplexVector m_data;
     GSMTime m_time;
 
@@ -131,11 +127,11 @@ public:
 		o->remove();
 	}
     }
-    
+
     static void dump(const GSMTime& t) {
 	RxInData* d = 0;
 	Lock myLock(s_inDataLoker);
-	for (ObjList* o = s_indata.skipNull();o;) {
+	for (ObjList* o = s_indata.skipNull(); o;) {
 	    RxInData* rx = static_cast<RxInData*>(o->get());
 	    if (t > rx->m_time) {
 		o->remove();
@@ -143,9 +139,9 @@ public:
 		continue;
 	    }
 	    if (rx->m_time == t) {
-		o->remove(false);
+		TelEngine::destruct(d);
+		d = static_cast<RxInData*>(o->remove(false));
 		o = o->skipNull();
-		d = rx;
 		continue;
 	    }
 	    o = o->skipNext();
@@ -157,6 +153,7 @@ public:
 	String dump;
 	Complex::dump(dump,d->m_data.data(),d->m_data.length());
 	::printf("input-data:%s",dump.c_str());
+	TelEngine::destruct(d);
     }
 };
 
@@ -165,33 +162,49 @@ class FileDataDumper : public Thread
 public:
     FileDataDumper(const String& fileName);
     void addData(const ComplexVector& v);
-    inline void exit() 
-	{ m_exit = true; }
+    static bool start(FileDataDumper*& ptr, const String& fileName);
+    static inline void stop(FileDataDumper*& ptr) {
+	    if (!ptr)
+		return;
+	    ptr->cancel();
+	    ptr = 0;
+	}
 protected:
     virtual void run();
 private:
     ObjList m_list;
     String m_fileName;
     Mutex m_mutex;
-    bool m_exit;
 };
 
 FileDataDumper::FileDataDumper(const String& fileName)
-    : m_fileName(fileName),m_exit(false)
+    : Thread("TrxFileDump"),
+    m_fileName(fileName),
+    m_mutex(false,"TrxFileDump")
 {
-    
 }
 
 void FileDataDumper::addData(const ComplexVector& v)
 {
     static int s_counter = 0;
+    static GSMTime t;
     s_counter++;
     if ((s_counter % 1001) != 0)
 	return;
     s_counter = 0;
-    static GSMTime t;
     Lock myLock(m_mutex);
     m_list.append(new RxInData(v,t));
+}
+
+bool FileDataDumper::start(FileDataDumper*& ptr, const String& fileName)
+{
+    stop(ptr);
+    ptr = new FileDataDumper(fileName);
+    if (!ptr->startup()) {
+	delete ptr;
+	ptr = 0;
+    }
+    return ptr != 0;
 }
 
 void FileDataDumper::run()
@@ -201,20 +214,19 @@ void FileDataDumper::run()
 	Debug(DebugNote,"Unable to open dump file %s",m_fileName.c_str());
 	return;
     }
-    while (!m_exit) {
+    while (!Thread::check(false)) {
 	Lock myLock(m_mutex);
 	ObjList* o = m_list.skipNull();
-	if (!o) {
-	    Thread::msleep(5);
+	RxInData* in = o ? static_cast<RxInData*>(o->remove(false)) : 0;
+	myLock.drop();
+	if (!in) {
+	    Thread::idle();
 	    continue;
 	}
-	RxInData* in = static_cast<RxInData*>(o->remove(false));
-	myLock.drop();
 	String s;
 	Complex::dump(s,in->m_data.data(),in->m_data.length());
+	s << "\r\n";
 	f.writeData(s.c_str(),s.length());
-	static const char* t = "\n\n";
-	f.writeData(t,2);
 	TelEngine::destruct(in);
     }
     Debug(DebugTest,"Data write finished!");
@@ -1007,10 +1019,8 @@ bool Transceiver::init(RadioIface* radio, const NamedList& params)
 	ok = true;
 	// TODO test
 	String* dumpFile = params.getParam(YSTRING("dump_file"));
-	if (dumpFile) {
-	    s_dumper = new FileDataDumper(params.getValue("dump_file"));
-	    s_dumper->startup();
-	}
+	if (dumpFile)
+	    FileDataDumper::start(s_dumper,*dumpFile);
 	// TODO end test
 	break;
     }
@@ -1906,7 +1916,8 @@ int Transceiver::handleCmdCustom(String& cmd, String* rspParam, String* reason)
 	if (!m_txTestBurst)
 	    return CmdEFailure;
 	return CmdEOk;
-    } else if (cmd.startSkip("testtxburst")) {
+    }
+    if (cmd.startSkip("testtxburst")) {
 	Lock myLock(m_testMutex);
 	TelEngine::destruct(m_txTestBurst);
 	return CmdEOk;
@@ -1914,17 +1925,20 @@ int Transceiver::handleCmdCustom(String& cmd, String* rspParam, String* reason)
     if (cmd == YSTRING("dumponetx")) {
 	m_dumpOneTx = true;
 	return CmdEOk;
-    } else if (cmd.startSkip(YSTRING("complexrx "),false)) {
+    }
+    if (cmd.startSkip(YSTRING("complexrx "),false)) {
 	ComplexVector* cv = new ComplexVector();
 	if (!loadFileData(cmd,*cv))
 	    return CmdEUnkCmd;
 	// TODO See how to set burst type
 	m_radio->setLoopbackArray(cv);
 	return CmdEOk;
-    } else if (cmd == YSTRING("complexrx")) {
+    }
+    if (cmd == YSTRING("complexrx")) {
 	m_radio->setLoopbackArray();
 	return CmdEOk;
-    } else if (cmd.startSkip("predefined ",false)) {
+    }
+    if (cmd.startSkip("predefined ",false)) {
 	int min = 0, max = 0, inc = 0;
 	int ret = ::sscanf(cmd.c_str(),"%d %d %d",&min,&max,&inc);
 	if (ret != 3 || min > max)
@@ -1949,7 +1963,8 @@ int Transceiver::handleCmdCustom(String& cmd, String* rspParam, String* reason)
     if (cmd.startSkip("dump-freq-shift ",false)) {
 	dumpFreqShift(cmd.toInteger());
 	return CmdEOk;
-    } else if (cmd.startSkip("noise",false)) {
+    }
+    if (cmd.startSkip("noise",false)) {
 	String dump;
 	for (unsigned int i = 0;i < m_arfcnCount;i++) {
 	    dump << "ARFCN: ";
@@ -1960,17 +1975,22 @@ int Transceiver::handleCmdCustom(String& cmd, String* rspParam, String* reason)
 	}
 	*rspParam << dump;
 	return CmdEOk;
-    } else if (cmd.startSkip("slots-delay")) {
-	String dump;
-	for (unsigned int i = 0;i < m_arfcnCount;i++) 
-	    m_arfcn[i]->dumpSlotsDelay(*rspParam);
-    } else if (cmd.startSkip("file-dump ",false)) {
-	s_dumper = new FileDataDumper(cmd);
-	s_dumper->startup();
+    }
+    if (cmd.startSkip("slots-delay")) {
+	if (rspParam) {
+	    String dump;
+	    for (unsigned int i = 0;i < m_arfcnCount;i++) 
+		m_arfcn[i]->dumpSlotsDelay(*rspParam);
+	}
 	return CmdEOk;
-    } else if (cmd == YSTRING("file-dump")) {
-	s_dumper->exit();
-	s_dumper = 0;
+    }
+    if (cmd.startSkip("file-dump ",false)) {
+	if (FileDataDumper::start(s_dumper,cmd))
+	    return CmdEOk;
+	return CmdEFailure;
+    }
+    if (cmd == YSTRING("file-dump")) {
+	FileDataDumper::stop(s_dumper);
 	return CmdEOk;
     }
     if (m_radio)
@@ -2076,7 +2096,7 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
 	if (slot.warnRecvDrop) {
 	    slot.warnRecvDrop = false;
 	    level = (bType != ARFCN::BurstUnknown) ? DebugInfo : DebugNote;
-	    tmp = "unhandled ";
+	    tmp = "unhandled";
 	    tmp << " burst type (" << bType << "," << ARFCN::burstType(bType) << ")";
 	    tmp << " slot_type " << a->chanType(slot.type);
 	}
