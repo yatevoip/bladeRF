@@ -253,12 +253,21 @@ private:
     void doPowerOff(bool safeRx, bool safeTx);
     void doClose(bool safeRx, bool safeTx);
     bool enableModule(bool rx, bool on);
+    inline bool enableModules()
+	{ return enableModule(true,true) && enableModule(false,true); }
     bool loadFPGA(const NamedList& params, int& code, String& what, String& fpga);
     bool setSampleRate(bool rx, int& code, String& what, unsigned int* actual = 0);
     bool setBandwith(bool rx, int& code, String& what, unsigned int value,
 	unsigned int* actual = 0);
     bool initSyncIO(bool rx, unsigned int numBuffers, unsigned int bufSizeSamples,
 	unsigned int numTransfers, int* code = 0, String* what = 0);
+    inline bool initSyncIO() {
+	    unsigned int bufSizeSamples = 8192;  // Buffer size in samples
+	    unsigned int numTransfers = 4;
+	    return initSyncIO(true,m_rxIO.libBuffers(),bufSizeSamples,numTransfers) &&
+		initSyncIO(false,m_txIO.libBuffers(),bufSizeSamples,numTransfers);
+	}
+    bool initTimestampsGPIO();
     bool setCorrection(bool rx, int offsetI, int offsetQ, bool safe);
     bool setCorrection(bool rx, bool offsI, int val);
     bool setVCTCXO(unsigned int val, bool safe);

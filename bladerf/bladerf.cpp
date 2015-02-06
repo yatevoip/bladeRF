@@ -707,7 +707,7 @@ bool BrfIface::radioPowerOn()
     if (!m_dev)
 	return false;
     doPowerOff(true,true);
-    if (!(enableModule(true,true) && enableModule(false,true))) {
+    if (!(initSyncIO() && initTimestampsGPIO() && enableModules())) {
 	doPowerOff(true,true);
 	return false;
     }
@@ -723,6 +723,22 @@ bool BrfIface::radioPowerOn()
     m_rxDcAvgI = 0;
     m_rxDcAvgQ = 0;
     return true;
+}
+
+bool BrfIface::initTimestampsGPIO()
+{
+    // Enable timestamps
+    // 0x10000: enable timestamps, clears and resets everything on write
+    uint32_t val = 0;
+    ::bladerf_config_gpio_read(m_dev,&val);
+    val |= 0x10000;
+    ::bladerf_config_gpio_write(m_dev,val);
+    val = 0;
+    ::bladerf_config_gpio_read(m_dev,&val);
+    if ((val & 0x10000) != 0)
+	return true;
+    Debug(this,DebugNote,"%sFailed to enable timestamps [%p]",prefix(),this);
+    return false;
 }
 
 // Stop the radio device
@@ -755,18 +771,6 @@ bool BrfIface::open(const NamedList& params)
 	// Load FPGA
 	if (!loadFPGA(params,code,what,fpga))
 	    break;
-	// Enable timestamps
-	// 0x10000: enable timestamps, clears and resets everything on write
-	uint32_t val = 0;
-	::bladerf_config_gpio_read(m_dev,&val);
-	val |= 0x10000;
-	::bladerf_config_gpio_write(m_dev,val);
-	val = 0;
-	::bladerf_config_gpio_read(m_dev,&val);
-	if (!(val & 0x10000)) {
-	    code = 0;
-	    BRF_SET_OPER_BREAK("Failed to enable timestamps");
-	}
 	// Update device speed
 	bladerf_dev_speed speed = ::bladerf_device_speed(m_dev);
 	if (speed != BLADERF_DEVICE_SPEED_HIGH && speed != BLADERF_DEVICE_SPEED_SUPER) {
@@ -878,13 +882,6 @@ bool BrfIface::enableModule(bool rx, bool on)
 	if (!on)
 	    ::bladerf_enable_module(m_dev,rxtxmod(rx),false);
 	return true;
-    }
-    if (on) {
-	BrfIO& io = rx ? m_rxIO : m_txIO;
-	unsigned int bufSizeSamples = 8192;  // Buffer size in samples
-	unsigned int numTransfers = 4;
-	if (!initSyncIO(rx,io.libBuffers(),bufSizeSamples,numTransfers))
-	    return false;
     }
     int ok = ::bladerf_enable_module(m_dev,rxtxmod(rx),on);
     if (ok >= 0) {
