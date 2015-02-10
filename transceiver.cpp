@@ -440,7 +440,8 @@ enum Command
     CmdPowerOff,
     CmdCustom,
     CmdManageTx,
-    CmdNoise
+    CmdNoise,
+    CmdFreqOffset
 };
 
 static const TokenDict s_cmdName[] = {
@@ -459,6 +460,7 @@ static const TokenDict s_cmdName[] = {
     {"CUSTOM",      CmdCustom},
     {"MANAGETX",    CmdManageTx},
     {"NOISELEV",    CmdNoise},
+    {"SETFREQOFFSET",CmdFreqOffset},
     {0,0}
 };
 
@@ -1176,9 +1178,12 @@ void Transceiver::runRadioSendData()
     waitPowerOn();
     m_radio->waitSendTx();
     m_radio->getRadioClock(m_txTime);
-    // Fill radio buffers with filler data or dummy bursts
-    for (int i = 0; i < 12; i++)
+    for (unsigned int i = 0; i < 102;i++) {
 	sendBurst(m_txTime);
+	m_txTime.incTn();
+    }
+    m_radio->getRadioClock(m_txTime);
+    GSMTime tmpTime;
     while (true) {
 	if (thShouldExit(this))
 	    break;
@@ -1186,10 +1191,22 @@ void Transceiver::runRadioSendData()
 	    break;
 
 	if (sendBurst(m_txTime)) {
-	    if (m_radio->loopback())
+	    if (m_radio->loopback()) {
 		m_radio->getRadioClock(m_txTime);
-	    else
-		m_txTime.incTn();
+		continue;
+	    }
+	    m_txTime.incTn();
+	    if (m_txTime.tn() != 9)
+		continue;
+	    int fnoff = GSMTime::fnOffset(m_txTime.fn(),tmpTime.fn());
+	    m_radio->getRadioClock(tmpTime);
+	    if (fnoff >= 3) {
+		m_txTime.decFn();
+		Debug(this,DebugMild,"Big Difference between Rx and Tx decFN (%d %d) (%d %d) fnoff %d",tmpTime.fn(),tmpTime.tn(),m_txTime.fn(),m_txTime.tn(),fnoff);
+	    } else if (fnoff < 1) {
+		m_txTime.incFn();
+		Debug(this,DebugMild,"Big Difference between Rx and Tx incFN (%d %d) (%d %d) fnoff %d",tmpTime.fn(),tmpTime.tn(),m_txTime.fn(),m_txTime.tn(),fnoff);
+	    }
 	    continue;
 	}
 	fatalError();
@@ -1397,6 +1414,9 @@ bool Transceiver::command(const char* str, String* rsp, unsigned int arfcn)
 	    rspParam << (int)-m_arfcn[0]->getAverageNoiseLevel();
 	    break;
 	}
+	case CmdFreqOffset:
+	    status = handleCmdFreqCorr(s,&rspParam);
+	    break;
 	default:
 	    status = CmdEUnkCmd;
     }
@@ -1658,6 +1678,7 @@ bool Transceiver::syncGSMTime()
     if (m_clockIface.m_socket.valid()) {
 	if (m_clockIface.writeSocket(tmp.c_str(),tmp.length(),*this) > 0) {
 	    DDebug(this,DebugInfo,"Updating GSM Time %s",tmp.c_str());
+	    Debug(this,DebugNote,"Updating clock %s",tmp.c_str());
 	    return true;
 	}
     }
@@ -1819,6 +1840,25 @@ int Transceiver::handleCmdSetGain(bool rx, String& cmd, String* rspParam)
 	    break;
 	if (rspParam)
 	    *rspParam << (int)newVal;
+	return 0;
+    }
+    if (rspParam)
+	*rspParam = cmd;
+    return code;
+}
+
+// Handle SETRXGAIN command. Return status code
+int Transceiver::handleCmdFreqCorr(String& cmd, String* rspParam)
+{
+    int code = CmdEFailure;
+    while (true) {
+	if (!m_radio)
+	    TRX_SET_ERROR_BREAK(CmdEInvalidState);
+	if (!cmd)
+	    TRX_SET_ERROR_BREAK(CmdEInvalidParam);
+	if (!m_radio->setFreqCorr(cmd.toInteger()))
+	    break;
+	*rspParam = cmd;
 	return 0;
     }
     if (rspParam)
@@ -2108,8 +2148,8 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
 #ifdef TRANSCEIVER_DUMP_ARFCN_PROCESS_IN
     a->dumpRecvBurst("processRadioBurst()",t,b.m_data.data(),len);
 #else
-    XDebug(a,DebugAll,"%sprocessRadioBurst() TN=%u FN=%u len=%u burst_type=%s [%p]",
-	a->prefix(),t.tn(),t.fn(),len,ARFCN::burstType(bType),a);
+    XDebug(a,DebugAll,"%sprocessRadioBurst() TN=%u FN=%u T2 %d T3 %d len=%u burst_type=%s [%p]",
+	a->prefix(),t.tn(),t.fn(),t.fn() % 26, t.fn() % 51,len,ARFCN::burstType(bType),a);
 #endif
     
     // Use the center values of the input data to calculate the power level.
@@ -2147,8 +2187,8 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
 #endif
     }
     
-    DDebug(a,DebugAll,"processRadioBurst ARFCN %d FN %d TN %d Hi %d. Level %f, noise %f, SNR %f powerDb %g low SNR %s lowPower %s",
-	   arfcn, t.fn(),slot.slot,t.fn() % 51,power, noise, SNR,b.m_powerLevel,String::boolText(SNR < m_snrThreshold),String::boolText(b.m_powerLevel < m_burstMinPower));
+    Debug(a,DebugAll,"processRadioBurst ARFCN %d FN %d TN %d T2 %d T3 %d. Level %f, noise %f, SNR %f powerDb %g low SNR %s lowPower %s, burst type %s",
+	   arfcn, t.fn(),slot.slot,t.fn() % 26,t.fn() % 51,power, noise, SNR,b.m_powerLevel,String::boolText(SNR < m_snrThreshold),String::boolText(b.m_powerLevel < m_burstMinPower),ARFCN::burstType(bType));
 
     if  (b.m_powerLevel > m_upPowerThreshold) 
 	Debug(a,DebugInfo, "Receiver clipping on ARFCN %d Slot %d, %f dB", arfcn, slot.slot, b.m_powerLevel);
@@ -2198,7 +2238,7 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
 	return false;
     }
     float peakOverMean = max / rms;
-    DDebug(a,DebugAll,"ARFCN %d Slot %d. chan max %f @ %d, rms %f, peak/mean %f", 
+    Debug(a,DebugAll,"ARFCN %d Slot %d. chan max %f @ %d, rms %f, peak/mean %f",
 		arfcn,slot.slot,max, maxIndex, rms, peakOverMean);
     if (peakOverMean < m_peakOverMeanThreshold) {
 #ifndef CALLGRIND_CHECK
@@ -2320,8 +2360,8 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
 	}
     }
     if (notified)
-	Debug(a,DebugNote,"Poor demodulator performance! FN %d TN %d Hi %d uncerten values %d",t.fn(),t.tn(),t.fn() % 51,count);
-
+	Debug(a,DebugNote,"Poor demodulator performance! FN %d TN %d T2 %d T3 %d uncerten values %d",t.fn(),t.tn(),t.fn() % 26,t.fn() % 51,count);
+// TODO chande to T1
     //const int8_t* table = GSMUtils::nbTscTable();
     const int8_t *ts = GSMUtils::nbTscTable();
     ts +=  + (GSM_NB_TSC_LEN * m_tsc);
@@ -2333,14 +2373,14 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
 	String t1,t2;
 	t1.hexify((void*)ts,GSM_NB_TSC_LEN,' ');
 	t2.hexify(bp,GSM_NB_TSC_LEN,' ');
-	Debug(a,DebugInfo,"Wrong Training Sequence! FN %d TN %d HI %d\nsequence:%s\nburst   :%s",t.fn(),t.tn(),t.fn() % 51,t1.c_str(),t2.c_str());
+	Debug(a,DebugInfo,"Wrong Training Sequence! FN %d TN %d T2 %d T3 %d\nsequence:%s\nburst   :%s",t.fn(),t.tn(),t.fn() % 26,t.fn() % 51,t1.c_str(),t2.c_str());
 	tsNotif = true;
 	break;
     }
     Debug(a,DebugAll,"Processed RX burst! Good Demod Performance %s Valid Training Seq %s power %f",
 	String::boolText(!notified),String::boolText(!tsNotif),b.m_powerLevel);
     if (!notified && !tsNotif)
-	Debug(DebugTest,"Got good burst!!FN %d TN %d HI %d",t.fn(),t.tn(),t.fn() % 51);
+	Debug(DebugTest,"Got good burst!!FN %d TN %d T2 %d T3 %d",t.fn(),t.tn(),t.fn() % 26,t.fn() % 51);
 #endif
     return true;
 }
@@ -2858,7 +2898,7 @@ void ARFCN::addBurst(GSMTxBurst* burst)
 	return;
     }
     GSMTime tmpTime = txTime;
-    tmpTime.advance(153,0);
+    tmpTime.advance(204,0);
     if (burst->time() > tmpTime) {
 	if (debugAt(DebugNote)) {
 	    uint32_t f;
@@ -3257,8 +3297,7 @@ RadioIface::RadioIface()
     m_txData(false), m_powerOn(false), m_clockMutex(false,"RadioClock"),
     m_txBufferSpace(2,0), m_testMin(0), m_testMax(0), m_testIncrease(0),
     m_testValue(0), m_loopback(false), m_loopbackSleep(0), m_loopbackNextSend(0),
-    m_loopbackArray(0)
-    
+    m_loopbackArray(0), m_showClocks(false)
 {
     m_txSynchronizer.lock();
 #ifdef CALLGRIND_CHECK
@@ -3354,15 +3393,23 @@ void RadioIface::runReadRadio()
     GSMTime time(m_clock);
     time.decTn(3);
     unsigned int shortBufLen = BITS_PER_TIMESLOT * m_samplesPerSymbol;
-    
-    unsigned int longBufLen = 157 * m_samplesPerSymbol;
 #if 1
-    m_rxData.resetInt16(initialReadTs(),longBufLen);
+    m_rxData.resetInt16(initialReadTs(),shortBufLen);
     while (!thShouldExit(transceiver())) {
-	bool shortBuf = ((time.tn() % 4) != 0);
-	unsigned int& rd = shortBufLen;//(shortBuf ? shortBufLen : longBufLen);
+	unsigned int& rd = shortBufLen;
 	// Read samples from radio until the buffer is full
 	while (m_rxData.pos() < rd) {
+	    if (m_showClocks) {
+		m_showClocks = false;
+		GSMTime bt,rt,diff;
+		u_int64_t btime = getBoardTimestamp();
+		uint fd = shortBufLen * 8;
+		bt.assign(btime / fd,(btime % fd) / shortBufLen);
+		rt.assign(m_rxData.timestamp() / fd,(m_rxData.timestamp() % fd) / shortBufLen);
+		GSMTime::diff(diff,bt,rt);
+		Debug(this,DebugNote,"\nBoard time FN %d TN %d unused %d\nRadio time FN %d TN %d unused %d\nDiff %d %d\nRadio Clock FN %d TN %d",
+		    bt.fn(),bt.tn(),(int)(btime % shortBufLen),rt.fn(),rt.tn(),(int)(m_rxData.timestamp() % shortBufLen),diff.fn(),diff.tn(),m_clock.fn(),m_clock.tn());
+	    }
 	    unsigned int samples = rd - m_rxData.pos();
 	    if (!readRadio(m_rxData,&samples)) {
 		Alarm(this,"system",DebugWarn,"%sRadio read fatal error [%p]",
@@ -3386,8 +3433,7 @@ void RadioIface::runReadRadio()
 	m_clockMutex.unlock();
 	time.incTn();
 	m_rxData.consumed(rd);
-	if (!shortBuf)
-	    signalSendTx();
+	signalSendTx();
     }
 #else
     while (!thShouldExit(transceiver())) {
@@ -3559,6 +3605,7 @@ bool RadioIface::sendData(const ComplexVector& data, const GSMTime& time)
 	}
 	if (!m_txData.full())
 	    return true;
+	m_txData.m_time = time;
 	if (!writeRadio(m_txData))
 	    return false;
     }
@@ -3598,6 +3645,10 @@ int RadioIface::command(const String& cmd, String* rspParam, String* reason)
 {
     if (!cmd)
 	return Transceiver::CmdEOk;
+    if (cmd == YSTRING("dump-clocks")) {
+	m_showClocks = true;
+	return Transceiver::CmdEOk;
+    }
     return Transceiver::CmdEUnkCmd;
 }
 

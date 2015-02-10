@@ -262,7 +262,6 @@ static inline void printIO(BrfIface* ifc, bool read, BrfIO& rx, BrfIO& tx, unsig
 #endif
 }
 
-
 //
 // BrfIO
 //
@@ -306,6 +305,47 @@ static void initTestData()
 	s_tenTen[i] = (i % 8) ? BRF_ENERGYPEAK : -BRF_ENERGYPEAK;
 }
 
+DataDumper::DataDumper(BrfIface* iface, u_int64_t samples, unsigned int spt)
+    : m_iface(iface), m_samples(samples), m_written(0), m_samplesPerTimeslot(spt)
+{}
+
+bool DataDumper::open(const String& fileName)
+{
+    if (!m_file.openPath(fileName,true,false,true)) {
+	Debug(m_iface,DebugWarn,"Failed to open file %s error %s [%p] %p",fileName.c_str(),strerror(errno),&m_file,this);
+	return false;
+    }
+    DDebug(m_iface,DebugNote,"File %s oppened![%p] %p",fileName.c_str(),&m_file,this);
+    return true;
+}
+
+void DataDumper::write(void* buf,unsigned int len, u_int64_t timestamp)
+{
+    if (m_samples < m_written) {
+	BrfIface* i  = m_iface;
+	m_iface = 0;
+	if (i)
+	    i->resetDumper(this,true);
+	return;
+    }
+    if (len % 2)
+	Debug(m_iface,DebugMild,"Odd buf length! Input data not in samples?[%p] %p ",&m_file,this);
+
+    String ts("\nTime Stamp: FN: ");
+    ts << timestamp / (8 * m_samplesPerTimeslot);
+    ts << " TN: ";
+    ts << (timestamp % (8 * m_samplesPerTimeslot)) / m_samplesPerTimeslot;
+    ts << "\n";
+    m_file.writeData(ts.c_str(),ts.length());
+    String tmp;
+    tmp.hexify(buf,len,' ');
+    int w = m_file.writeData(tmp.c_str(),tmp.length());
+    if (w != (int)tmp.length())
+	Debug(m_iface,DebugWarn,"DataDumper: data write requested %d written %d Left "FMT64" %s",tmp.length(),w,m_samples - m_written,w < 0 ? ::strerror(m_file.error()) : "");
+
+    m_written += len / 4;
+}
+
 const char* s_dumpMutexName = "BrfIfaceDataDump";
 
 //
@@ -329,7 +369,10 @@ BrfIface::BrfIface()
     m_predefinedData(0),
     m_dumpMutex(true,s_dumpMutexName),
     m_txDump(0),
-    m_loopbackFreq(0)
+    m_loopbackFreq(0),
+    m_dumpTxTime(false),
+    m_txDumper(0),
+    m_rxDumper(0)
 {
     setSpeed(false);
     initTestData();
@@ -427,6 +470,26 @@ int BrfIface::command(const String& cmd, String* rspParam, String* reason)
 	if (ret)
 	    rspParam->append(lookup(l,s_lnaGain));
 	return tuneCmdReturn(ret);
+    } else if (cmd.startsWith("tx-time")) {
+	m_dumpTxTime = true;
+    } else if (cmd.startsWith("board-dump")) {
+	unsigned int frames = 0;
+	if (::sscanf(cmd.c_str(),"board-dump %u",&frames) != 1) {
+	    frames = 100;
+	}
+	u_int64_t samples = frames * 8 * BITS_PER_TIMESLOT * m_samplesPerSymbol;
+	Time t;
+	DataDumper* drx = new DataDumper(this,samples,8 * BITS_PER_TIMESLOT);
+	String rxn("rx_");
+	rxn << t.sec();
+	drx->open(rxn);
+	setRxDump(drx);
+
+	DataDumper* dtx = new DataDumper(this,samples,8 * BITS_PER_TIMESLOT);
+	String txn("tx_");
+	txn << t.sec();
+	dtx->open(txn);
+	setTxDump(dtx);
     } else
 	return RadioIface::command(cmd,rspParam,reason);
     return status;
@@ -457,6 +520,7 @@ bool BrfIface::readRadio(RadioIOData& data, unsigned int* samples)
 	if (samples)
 	    *samples = len;
     }
+    int16_t* startBuf = data.buffer();
     while (len) {
 #ifdef BRF_DEBUG_RECV
 	Debug(this,DebugAll,
@@ -538,6 +602,7 @@ bool BrfIface::readRadio(RadioIOData& data, unsigned int* samples)
 	// bladeRF timestamp is given in int16_t elements count,
 	//  our timestamp is in samples
 	uint64_t ts = (hi << 31) | (lo >> 1);
+	m_lastBoardTs = ts;
 #ifdef BRF_DEBUG_RECV
 	Debug(this,DebugAll,"%sCurrent buffer %u ts=" FMT64U " (%u/%u) [%p]",
 	    prefix(),m_rxIO.current(),ts,(unsigned int)hi,(unsigned int)lo,this);
@@ -574,6 +639,9 @@ bool BrfIface::readRadio(RadioIOData& data, unsigned int* samples)
 	prefix(),data.timestamp(),len,m_rxIO.m_timestamp,
 	m_rxIO.current(),m_rxIO.m_buffers,m_rxIO.m_pos,this);
 #endif
+    if (m_rxDumper)
+	m_rxDumper->write(startBuf,*samples * 4,m_lastBoardTs);
+
     return true;
 }
 
@@ -591,6 +659,8 @@ bool BrfIface::writeRadio(RadioIOData& data)
 
     if (!(buf && len))
 	return true;
+    if (m_txDumper)
+	m_txDumper->write((void*)buf,len * 4,data.timestamp());
     if (m_txShowInfo) {
         if (m_txShowInfo > 0)
             m_txShowInfo--;
@@ -618,6 +688,7 @@ bool BrfIface::writeRadio(RadioIOData& data)
 	m_txIO.m_timestamp = dataTs;
     }
     unsigned int& nBuf = m_txIO.m_buffers;
+    u_int64_t lastTimestamp = 0;
     while (consumed < len) {
 #ifdef BRF_DEBUG_SEND
 	Debugger debug(DebugAll,"BrfIface SEND LOOP",
@@ -655,6 +726,7 @@ bool BrfIface::writeRadio(RadioIOData& data)
 		hdr.timeHi = swapBytes((uint32_t)(m_txIO.m_timestamp >> 31));
 		hdr.reserved = 0xdeadbeef;
 		hdr.flags = (uint32_t)-1;
+		lastTimestamp = m_txIO.m_timestamp;
 	    }
 	    m_txIO.advance(cp);
 	    buf += cp * 2;
@@ -696,6 +768,19 @@ bool BrfIface::writeRadio(RadioIOData& data)
 	prefix(),data.timestamp(),consumed,data.pos(),m_txIO.m_timestamp,m_txIO.m_pos,this);
 #endif
     data.consumed(consumed);
+    if (m_dumpTxTime) {
+	m_dumpTxTime = false;
+	GSMTime lt,bt,diff,rc,diffr;
+	uint fd = 1250 * 8;
+	lt.assign(lastTimestamp / fd,(lastTimestamp % fd) / 1250);
+	bt.assign(data.timestamp() / fd,(data.timestamp() % fd) / 1250);
+	GSMTime::diff(diff,bt,lt);
+	getRadioClock(rc);
+	GSMTime::diff(diffr,data.m_time,rc);
+	Debug(this,DebugNote,"\nTxBoard time FN %d TN %d unused %d\nTxRadio time FN %d TN %d unused %d\nTxDiff %d %d\nTxRadio Clock FN %d TN %d, radioClock FN %d TN %d diff %d %d",
+		    lt.fn(),lt.tn(),(int)(lastTimestamp % 1250),bt.fn(),bt.tn(),(int)(data.timestamp() % 1250),diff.fn(),diff.tn(),data.m_time.fn(),data.m_time.tn(),rc.fn(),rc.tn(),diffr.fn(),diffr.tn());
+
+    }
     return true;
 }
 
@@ -1257,6 +1342,43 @@ bool BrfIface::getVga(bool rx, bool one, int& gain)
 bool BrfIface::getFrequency(bool rx, unsigned int &freq)
 {
     return ::bladerf_get_frequency(m_dev,rxtxmod(rx),&freq) >= 0;
+}
+
+bool BrfIface::setRxDump(DataDumper* data)
+{
+    BRF_RX_SERIALIZE_ON_RET(false,false);
+    DataDumper* d = m_rxDumper;
+    m_rxDumper = data;
+    if (d)
+	delete d;
+    return true;
+}
+
+bool BrfIface::setTxDump(DataDumper* data)
+{
+    BRF_TX_SERIALIZE_ON_RET(false,false);
+    DataDumper* d = m_txDumper;
+    m_txDumper = data;
+    if (d)
+	delete d;
+    return true;
+}
+
+bool BrfIface::resetDumper(DataDumper* d, bool safe)
+{
+    if (!d)
+	return true;
+    if (m_txDumper && d == m_txDumper) {
+	BRF_TX_SERIALIZE_ON_RET(safe,false);
+	delete m_txDumper;
+	m_txDumper = 0;
+    } else if (m_rxDumper && d == m_rxDumper) {
+	BRF_RX_SERIALIZE_ON_RET(safe,false);
+	if (m_rxDumper)
+	    delete m_rxDumper;
+	m_rxDumper = 0;
+    }
+    return true;
 }
 
 static inline void computeRxAdjustPeak(int& p, int val, uint64_t& peakTs, uint64_t& ts)

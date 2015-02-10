@@ -61,6 +61,23 @@ struct BrfHighSpeedTsBuffer
     int16_t samples[BRF_HIGHSPEED_SAMPLES_USE * 2];
 };
 
+/**
+ * Helper class to dump data into a file.
+ */
+class DataDumper
+{
+public:
+    DataDumper(BrfIface* iface, u_int64_t samples, unsigned int spt);
+    bool open(const String& fileName);
+    void write(void* buf, unsigned int len, u_int64_t timestamp);
+private:
+    BrfIface* m_iface;
+    u_int64_t m_samples;
+    u_int64_t m_written;
+    File m_file;
+    unsigned int m_samplesPerTimeslot;
+};
+
 class BrfIO
 {
 public:
@@ -204,6 +221,14 @@ public:
     virtual int command(const String& cmd, String* rspParam = 0, String* reason = 0);
 
     /**
+     * Set frequency correction offset
+     * @param val The new value
+     * @return 0 on success 1 on failure
+     */
+    virtual bool setFreqCorr(int val)
+	{ return setVCTCXO(val,false); }
+
+    /**
      * Destroy the object
      */
     virtual void destruct();
@@ -220,6 +245,22 @@ public:
 	    m_txDump = 0;
 	}
     }
+
+    /**
+     * Get The last timestamp received from the bord
+     * @return The last timestamp received from the board
+     */
+    virtual u_int64_t getBoardTimestamp()
+	{ return m_lastBoardTs; }
+
+    /**
+     * Reset data dumper.
+     * @param d The data dumper to reset.
+     * @param isSafe True if the operation is safe
+     * @return True if the dumper was reseted
+     */
+    bool resetDumper(DataDumper* d, bool isSafe = false);
+
 protected:
     /**
      * Read data from radio
@@ -298,6 +339,8 @@ private:
     bool getLpfMode(bool rx, int &lpfMode);
     bool getVga(bool rx,bool one, int& gain);
     bool getFrequency(bool rx, unsigned int &freq);
+    bool setRxDump(DataDumper* data = 0);
+    bool setTxDump(DataDumper* data = 0);
 
     inline uint32_t flag(uint32_t mask) const
 	{ return (m_flags & mask); }
@@ -331,6 +374,10 @@ private:
     Mutex m_dumpMutex;                   // Mutex used to block dump operations
     BladeRFDump* m_txDump;               // Dump data object for TX
     unsigned int m_loopbackFreq;         // Test loopback frequency
+    u_int64_t m_lastBoardTs;             // Last timestamp received from the board
+    bool m_dumpTxTime;                   // Flag used to dump RX time
+    DataDumper* m_txDumper;              // TX file data dumper
+    DataDumper* m_rxDumper;              // RX file data dumper
 };
 
 /**

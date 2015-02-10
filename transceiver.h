@@ -624,6 +624,7 @@ private:
     int handleCmdCustom(String& cmd, String* rspParam, String* reason);
     // Handle MANAGETX command. NOTE: this is for test purposes
     int handleCmdManageTx(unsigned int arfcn, String& cmd, String* rspParam);
+    int handleCmdFreqCorr(String& cmd, String* rspParam);
 
     bool m_error;                        // Fatal error occured
     bool m_exiting;                      // Stopping flag
@@ -1366,6 +1367,7 @@ public:
 	    m_buffer.resize(m_samples * 2 * sizeof(int16_t));
 	}
 
+    GSMTime m_time;
 protected:
     uint64_t m_timestamp;                // I/O timestamp
     unsigned int m_syncIOWaitMs;         // Synchronous I/O timeout (0: async I/O)
@@ -1517,6 +1519,13 @@ public:
     virtual int getFactoryValue(const String& name, String& value);
 
     /**
+     * Set frequency correction offset
+     * @param val The new value
+     * @return True on success false on failure
+     */
+    virtual bool setFreqCorr(int val) = 0;
+
+    /**
      * Execute a command
      * @param cmd Command to execute
      * @param rspParam Optional response
@@ -1568,6 +1577,13 @@ public:
 	    delete m_loopbackArray;
 	m_loopbackArray = loopback;
     }
+
+    /**
+     * Get The last timestamp received from the bord
+     * @return The last timestamp received from the board
+     */
+    virtual u_int64_t getBoardTimestamp()
+	{ return 0; }
 
 protected:
     /**
@@ -1643,6 +1659,7 @@ private:
     int m_loopbackSleep;                 // Time to sleep between two consecutive bursts sent in loopback mode
     u_int64_t m_loopbackNextSend;        // Next time to send a loopback burst
     ComplexVector* m_loopbackArray;      // Data to feed the RX part
+    bool m_showClocks;                   // Flag used to dump all clocks
 };
 
 }; // namespace TelEngine
