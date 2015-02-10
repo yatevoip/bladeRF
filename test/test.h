@@ -103,6 +103,13 @@ protected:
      */
     virtual int radioSetGain(bool rx, double dB, double* setVal = 0);
 
+    /**
+     * Set frequency correction offset
+     * @param val The new value
+     * @return True on success false on failure
+     */
+    virtual bool setFreqCorr(int val);
+
 private:
     bool m_powerOn;
 };

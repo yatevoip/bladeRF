@@ -136,4 +136,12 @@ int TestIface::radioSetGain(bool rx, double dB, double* setVal)
     return 0;
 }
 
+// Set frequency correction offset
+bool TestIface::setFreqCorr(int val)
+{
+    Debug(this,DebugAll,"%sTEST set freq correction %d [%p]",
+	prefix(),val,this);
+    return true;
+}
+
 /* vi: set ts=8 sw=4 sts=4 noet: */
