@@ -1433,8 +1433,9 @@ void BrfIface::computeRx()
 	    computeRxAdjustPeak(peak,-dcQMin,peakTs,ts);
 	}
     }
-    dcIAvg /= (m_rxIO.m_buffers * m_rxIO.useSamples());
-    dcQAvg /= (m_rxIO.m_buffers * m_rxIO.useSamples());
+    int div = m_rxIO.m_buffers * m_rxIO.useSamples();
+    dcIAvg /= div;
+    dcQAvg /= div;
     if (debug) {
 	if (m_rxShowDcInfo > 0)
 	    m_rxShowDcInfo--;
