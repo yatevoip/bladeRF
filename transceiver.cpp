@@ -747,8 +747,8 @@ void TransceiverObj::dumpRxData(const char* prefix, unsigned int index, const ch
 	return;
 #ifdef TRANSCEIVER_DUMP_RX_DEBUG
     String tmp;
-    for (int i = 0;i < len;i++,f++)
-	dumpAppendFloat(tmp,*f,",");
+    for (unsigned int i = 0;i < len;i++,f++)
+	SigProcUtils::appendFloat(tmp,*f,",");
     ::printf("\n%s%d%s:%s\n",prefix,index,postfix,tmp.safe());
 #endif
 }
@@ -2432,7 +2432,7 @@ void TransceiverQMF::radioPowerOnStarting()
 #ifdef TRANSCEIVER_DUMP_RX_DEBUG
 	String dumphb = "hb:";
 	for (unsigned int i = 0; i < m_halfBandFltCoeff.length(); i++)
-	    dumpAppendFloat(dumphb,m_halfBandFltCoeff[i],",");
+	    SigProcUtils::appendFloat(dumphb,m_halfBandFltCoeff[i],",");
 	::printf("%s",dumphb.c_str());
 #endif
     }
