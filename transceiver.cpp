@@ -603,12 +603,14 @@ bool GenQueue::add(GenObject* obj, Transceiver* trx)
 {
     if (!obj)
 	return false;
-    if (m_max) {
+    m_mutex.lock();
+    if (m_max <= m_count) {
+	m_mutex.unlock();
 	while (!m_free.lock(Thread::idleUsec()))
 	    if (thShouldExit(trx))
 		return false;
+	m_mutex.lock();
     }
-    m_mutex.lock();
     m_data.append(obj);
     m_count++;
     m_empty = false;
@@ -625,6 +627,11 @@ bool GenQueue::waitPop(GenObject*& obj, Transceiver* trx)
 {
     if (m_max)
 	while (true) {
+	    obj = internalPop();
+	    if (obj) {
+		m_free.unlock();
+		return true;
+	    }
 	    if (m_used.lock(Thread::idleUsec())) {
 		obj = internalPop();
 		if (obj) {
@@ -747,8 +754,7 @@ void TransceiverObj::dumpRxData(const char* prefix, unsigned int index, const ch
 	return;
 #ifdef TRANSCEIVER_DUMP_RX_DEBUG
     String tmp;
-    for (unsigned int i = 0;i < len;i++,f++)
-	SigProcUtils::appendFloat(tmp,*f,",");
+    FloatVector::dump(tmp,f,len,SigProcUtils::appendFloat);
     ::printf("\n%s%d%s:%s\n",prefix,index,postfix,tmp.safe());
 #endif
 }
@@ -931,7 +937,7 @@ Transceiver::Transceiver(const char* name)
     m_radio(0),
     m_radioInThread(0),
     m_radioOutThread(0),
-    m_rxQueue(8,"TrxRxQueue"),
+    m_rxQueue(24,"TrxRxQueue"),
     m_oversamplingRate(1),
     m_burstMinPower(0),
     m_snrThreshold(2),
@@ -1148,7 +1154,10 @@ void Transceiver::runRadioSendData()
 	}
 	while (rTime > txTime) {
 	    if (sendBurst(txTime)) {
-		txTime.incTn();
+		if (m_radio->loopback())
+		    m_radio->getRadioClock(m_txTime);
+		else
+		    txTime.incTn();
 		continue;
 	    }
 	    fatalError();
@@ -1239,6 +1248,35 @@ bool Transceiver::sendBurst(GSMTime& time)
 #endif
 	if (!burst)
 	    continue;
+	if (burst->type() != 0) {
+	    int t3 = time.fn() % 51;
+	    switch (t3) {
+		case 0:
+		case 10:
+		case 20:
+		case 30:
+		case 40:
+		    if (burst->type() == 2)
+			break;
+		    Debug(this,DebugNote,"Sending Burst type %d on FCCH t3 %d FN %d TN %d burst FN %d TN %d",burst->type(),t3,time.fn(),time.tn(),burst->time().fn(),burst->time().tn());
+		    break;
+		case 1:
+		case 11:
+		case 21:
+		case 31:
+		case 41:
+		    if (burst->type() == 1)
+			break;
+		    Debug(this,DebugNote,"Sending Burst type %d on SCH t3 %d FN %d TN %d burst FN %d TN %d",burst->type(),t3,time.fn(),time.tn(),burst->time().fn(),burst->time().tn());
+		    break;
+		default:
+		    Debug(this,DebugNote,"Sending Burst type %d on unknow channel t3 %d FN %d TN %d burst FN %d TN %d",burst->type(),t3,time.fn(),time.tn(),burst->time().fn(),burst->time().tn());
+		    break;
+
+
+
+	    }
+	}
 	if (!m_txTestBurst || a->arfcn() != 0)
 	    SignalProcessing::sum(m_sendBurstBuf,burst->txData(),first);
 	else {
@@ -1676,7 +1714,7 @@ bool Transceiver::syncGSMTime()
     m_nextClockUpdTime.advance(216);
     tmp << (m_txTime.fn() + 2);
     if (m_clockIface.m_socket.valid()) {
-	if (m_clockIface.writeSocket(tmp.c_str(),tmp.length(),*this) > 0) {
+	if (m_clockIface.writeSocket(tmp.c_str(),tmp.length() + 1,*this) > 0) {
 	    DDebug(this,DebugInfo,"Updating GSM Time %s",tmp.c_str());
 	    Debug(this,DebugNote,"Updating clock %s",tmp.c_str());
 	    return true;
@@ -2145,17 +2183,11 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
     }
     if (len < ARFCN_RXBURST_LEN)
 	return false;
-#ifdef TRANSCEIVER_DUMP_ARFCN_PROCESS_IN
-    a->dumpRecvBurst("processRadioBurst()",t,b.m_data.data(),len);
-#else
-    XDebug(a,DebugAll,"%sprocessRadioBurst() TN=%u FN=%u T2 %d T3 %d len=%u burst_type=%s [%p]",
-	a->prefix(),t.tn(),t.fn(),t.fn() % 26, t.fn() % 51,len,ARFCN::burstType(bType),a);
-#endif
     
     // Use the center values of the input data to calculate the power level.
     float power = SignalProcessing::computePower(b.m_data.data(),
 	b.m_data.length(),4,0.2, (148 - 4) / 2);
-    
+
     // Use the last 4 samples of the input data (guard period) to calculate the noise level
     float noise = SignalProcessing::computePower(b.m_data.data(),
 	b.m_data.length(),2,0.5,b.m_data.length() - 2);
@@ -2171,6 +2203,12 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
     float SNR = power/noise;
     b.m_powerLevel = 10 * ::log10f(power);
 
+#ifdef TRANSCEIVER_DUMP_ARFCN_PROCESS_IN
+    a->dumpRecvBurst("processRadioBurst()",t,b.m_data.data(),len);
+#else
+    XDebug(a,DebugAll,"%sprocessRadioBurst() TN=%u FN=%u T2 %d T3 %d len=%u burst_type=%s power %f noise %f SNR %f [%p]",
+	a->prefix(),t.tn(),t.fn(),t.fn() % 26, t.fn() % 51,len,ARFCN::burstType(bType),power,noise,SNR,a);
+#endif
 
     if (SNR < m_snrThreshold) {
 	// Discard Burst low SNR
@@ -2279,7 +2317,7 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
 	for (unsigned int i = b.m_data.length() - toaError; i < b.m_data.length(); i++)
 	    b.m_data[i].set(0,0);
     }
-
+    b.m_timingError = toaError;
     // Trim and center the channel estimate.
     // This shifts the channel estimate to put the max power peak in the center, +/- 1/2 symbol period.
     // The alignment error of heTrim is exactly the opposiate of the alignment error of xf2.
@@ -2361,19 +2399,20 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
     }
     if (notified)
 	Debug(a,DebugNote,"Poor demodulator performance! FN %d TN %d T2 %d T3 %d uncerten values %d",t.fn(),t.tn(),t.fn() % 26,t.fn() % 51,count);
-// TODO chande to T1
-    //const int8_t* table = GSMUtils::nbTscTable();
+
     const int8_t *ts = GSMUtils::nbTscTable();
     ts +=  + (GSM_NB_TSC_LEN * m_tsc);
     uint8_t *bp = burst + 61;
     bool tsNotif = false;
+    int t3 = t.fn() % 51;
+    bool shoulHave = bType != ARFCN::BurstAccess && (t3 % 10 != 0) && (t3 % 10 != 1);
     for (unsigned int i = 0;i < GSM_NB_TSC_LEN;i++) {
 	if (ts[i] == bp[i])
 	    continue;
 	String t1,t2;
 	t1.hexify((void*)ts,GSM_NB_TSC_LEN,' ');
 	t2.hexify(bp,GSM_NB_TSC_LEN,' ');
-	Debug(a,DebugInfo,"Wrong Training Sequence! FN %d TN %d T2 %d T3 %d\nsequence:%s\nburst   :%s",t.fn(),t.tn(),t.fn() % 26,t.fn() % 51,t1.c_str(),t2.c_str());
+	Debug(a,shoulHave ? DebugWarn : DebugInfo,"Wrong Training Sequence! FN %d TN %d T2 %d T3 %d bType : %s\nsequence:%s\nburst   :%s",t.fn(),t.tn(),t.fn() % 26,t.fn() % 51,ARFCN::burstType(bType),t1.c_str(),t2.c_str());
 	tsNotif = true;
 	break;
     }
@@ -2431,8 +2470,7 @@ void TransceiverQMF::radioPowerOnStarting()
 	}
 #ifdef TRANSCEIVER_DUMP_RX_DEBUG
 	String dumphb = "hb:";
-	for (unsigned int i = 0; i < m_halfBandFltCoeff.length(); i++)
-	    SigProcUtils::appendFloat(dumphb,m_halfBandFltCoeff[i],",");
+	m_halfBandFltCoeff.dump(dumphb,SigProcUtils::appendFloat);
 	::printf("%s",dumphb.c_str());
 #endif
     }
@@ -2731,7 +2769,7 @@ void TxFillerTable::clear()
 //
 ARFCN::ARFCN()
     : m_mutex(false,"ARFCN"),
-    m_rxQueue(16,"ARFCNRx"),
+    m_rxQueue(24,"ARFCNRx"),
     m_radioInThread(0),
     m_chans(0),
     m_rxBursts(0),

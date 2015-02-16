@@ -109,6 +109,7 @@ GSMTxBurst* GSMTxBurst::parse(const uint8_t* buf, unsigned int len, DataBlock* d
     GSMTxBurst* burst = new GSMTxBurst;
     burst->m_filler = (buf[0] & 0x80) != 0;
     burst->m_time.assign(net2uint32(buf + 1),buf[0] & 0x7f);
+    burst->m_type = buf[5];
     burst->m_powerLevel = ::pow(10, -(float)buf[5] / 10);
     // This should be between 0 and 1
     if (burst->m_powerLevel < 0 || burst->m_powerLevel > 1) {
@@ -156,12 +157,13 @@ void GSMRxBurst::fillEstimatesBuffer()
     //   4 bytes GSM frame number, big endian
     //   1 byte power level
     //   2 bytes correlator timing offset (timing advance error)
+    m_timingError *= 256;
     *buf++ = m_time.tn();
     *buf++ = (int8_t)(m_time.fn() >> 24);
     *buf++ = (int8_t)(m_time.fn() >> 16);
     *buf++ = (int8_t)(m_time.fn() >> 8);
     *buf++ = (int8_t)m_time.fn();
-    *buf++ = (int8_t)m_powerLevel;
+    *buf++ = (int8_t)-m_powerLevel;
     *buf++ = (int8_t)((int)m_timingError >> 8);
     *buf++ = (int8_t)m_timingError;
 }

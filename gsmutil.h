@@ -395,7 +395,7 @@ public:
      * Constructor
      */
     inline GSMTxBurst()
-	: m_powerLevel(0), m_filler(false)
+	: m_powerLevel(0), m_filler(false), m_type(0)
 	{}
 
     /**
@@ -452,10 +452,14 @@ public:
      */
     static GSMTxBurst* buildFiller();
 
+    inline bool type()
+	{ return m_type; }
+
 private:
     ComplexVector m_txData;
     float m_powerLevel;
     bool m_filler;                       // Filler burst
+    int m_type;
 };
 
 
