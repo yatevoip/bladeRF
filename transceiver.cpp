@@ -1224,9 +1224,24 @@ void Transceiver::runRadioSendData()
 }
 #endif
 
+bool shouldBeSync(GSMTime& time)
+{
+    if (time.tn() != 0)
+	return false;
+    int t3 = time.fn() % 51;
+    return t3 == 1 || t3 == 11 || t3 == 21 || t3 == 31 || t3 == 41;
+}
+
 bool Transceiver::sendBurst(GSMTime& time)
 {
-    XDebug(this,DebugAll,"sendBurst() fn=%u tn=%u [%p]",time.fn(),time.tn(),this);
+    int t3 = time.fn() % 51;
+    int t2 = time.fn() % 26;
+#ifdef DEBUG
+    if (t3 == 0 && time.tn() == 0)
+	Debug(this,DebugAll,"Sending Time FN=%d",time.fn());
+#endif
+
+    XDebug(this,DebugAll,"sendBurst() FN=%u TN=%u T2 %d T3 %d[%p]",time.fn(),time.tn(),t2,t3,this);
     // Build send data
     bool first = true;
     for (unsigned int i = 0; i < m_arfcnCount; i++) {
@@ -1234,8 +1249,14 @@ bool Transceiver::sendBurst(GSMTime& time)
 	a->moveBurstsToFillers(time,m_radio && !m_radio->loopback());
 	// Get the burst to send
 	bool addFiller = true;
+	bool sync = (a->arfcn() == 0) && shouldBeSync(time);
 	GSMTxBurst* burst = a->getBurst(time);
 	if (!burst) {
+	    if (sync) {
+		m_sendBurstBuf.resize(m_sendBurstBuf.length());
+		Debug(this,DebugNote,"Requested to get SYNC burst from filler table! ARFCN %d FN %d TN %d T2 %d T3 %d",a->arfcn(),time.fn(),time.tn(),t2,t3);
+		continue;
+	    }
 	    burst = a->m_fillerTable.get(time);
 	    addFiller = false;
 	}
@@ -1248,8 +1269,7 @@ bool Transceiver::sendBurst(GSMTime& time)
 #endif
 	if (!burst)
 	    continue;
-	if (burst->type() != 0) {
-	    int t3 = time.fn() % 51;
+	if (time.tn() == 0 && i == 0) {
 	    switch (t3) {
 		case 0:
 		case 10:
@@ -1258,7 +1278,7 @@ bool Transceiver::sendBurst(GSMTime& time)
 		case 40:
 		    if (burst->type() == 2)
 			break;
-		    Debug(this,DebugNote,"Sending Burst type %d on FCCH t3 %d FN %d TN %d burst FN %d TN %d",burst->type(),t3,time.fn(),time.tn(),burst->time().fn(),burst->time().tn());
+		    Debug(this,DebugNote,"Sending Burst type %d on FCCH t3=%d FN=%d TN=%d burst FN=%d TN=%d filler=%u",burst->type(),t3,time.fn(),time.tn(),burst->time().fn(),burst->time().tn(),!addFiller);
 		    break;
 		case 1:
 		case 11:
@@ -1267,10 +1287,11 @@ bool Transceiver::sendBurst(GSMTime& time)
 		case 41:
 		    if (burst->type() == 1)
 			break;
-		    Debug(this,DebugNote,"Sending Burst type %d on SCH t3 %d FN %d TN %d burst FN %d TN %d",burst->type(),t3,time.fn(),time.tn(),burst->time().fn(),burst->time().tn());
+		    Debug(this,DebugNote,"Sending Burst type %d on SCH t3 %d FN=%d TN=%d burst FN=%d TN=%d filler=%u",burst->type(),t3,time.fn(),time.tn(),burst->time().fn(),burst->time().tn(),!addFiller);
 		    break;
 		default:
-		    Debug(this,DebugNote,"Sending Burst type %d on unknow channel t3 %d FN %d TN %d burst FN %d TN %d",burst->type(),t3,time.fn(),time.tn(),burst->time().fn(),burst->time().tn());
+		    if (burst->type() != 0)
+			Debug(this,DebugNote,"Sending Burst type %d on unknow channel t3 %d FN=%d TN=%d burst FN=%d TN=%d filler=%u",burst->type(),t3,time.fn(),time.tn(),burst->time().fn(),burst->time().tn(),!addFiller);
 		    break;
 
 
@@ -1714,11 +1735,8 @@ bool Transceiver::syncGSMTime()
     m_nextClockUpdTime.advance(216);
     tmp << (m_txTime.fn() + 2);
     if (m_clockIface.m_socket.valid()) {
-	if (m_clockIface.writeSocket(tmp.c_str(),tmp.length() + 1,*this) > 0) {
-	    DDebug(this,DebugInfo,"Updating GSM Time %s",tmp.c_str());
-	    Debug(this,DebugNote,"Updating clock %s",tmp.c_str());
+	if (m_clockIface.writeSocket(tmp.c_str(),tmp.length() + 1,*this) > 0)
 	    return true;
-	}
     }
     else
 	Debug(this,DebugFail,"Clock interface is invalid [%p]",this);
@@ -2763,6 +2781,13 @@ void TxFillerTable::clear()
     TelEngine::destruct(m_filler);
 }
 
+GSMTxBurst** TxFillerTable::fillerHolder(const GSMTime& time)
+{
+    unsigned int modulus = m_owner ? m_owner->getFillerModulus(time.tn()) : 102;
+    if (modulus > m_fillers.length())
+	modulus = m_fillers.length();
+    return &(m_fillers[time.fn() % modulus][time.tn()]);
+}
 
 //
 // ARFCN
@@ -2776,6 +2801,7 @@ ARFCN::ARFCN()
     m_rxDroppedBursts(0),
     m_averegeNoiseLevel(0),
     m_arfcn(0),
+    m_fillerTable(this),
     m_txMutex(false,"ARFCNTx")
 {
     for (uint8_t i = 0; i < 8; i++) {

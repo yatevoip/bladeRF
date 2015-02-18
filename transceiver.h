@@ -757,8 +757,8 @@ public:
      * Constructor
      * Allocates 
      */
-    inline TxFillerTable()
-	: m_filler(0)
+    inline TxFillerTable(ARFCN* owner)
+	: m_filler(0), m_owner(owner)
 	{ init(1); }
 
     /**
@@ -798,13 +798,12 @@ public:
     void init(unsigned int len, GSMTxBurst* filler = 0);
 
 private:
-    inline GSMTxBurst** fillerHolder(const GSMTime& time)
-	// We assume GSM time timeslot can't be greater then 7
-	{ return &(m_fillers[time.fn() % m_fillers.length()][time.tn()]); }
+    GSMTxBurst** fillerHolder(const GSMTime& time);
     void clear();
 
     GSMTxBurst* m_filler;                // Filler
     SigProcVector<GSMTxBurstPtrVector,false> m_fillers; // Table of filler bursts
+    ARFCN* m_owner;
 };
 
 
@@ -971,6 +970,15 @@ public:
 	    return;
 	m_slots[index].addDelay(delay);
     }
+
+    /**
+     * Get filler frame modulus to determine it's place into the filler table
+     * @param tn The timeslot number of the filler frame.
+     * @return The filler frame modulus
+     */
+    inline unsigned int getFillerModulus(unsigned int tn)
+	{ return m_slots[tn].modulus; }
+
 protected:
     /**
      * Move expired and filler bursts filler table
