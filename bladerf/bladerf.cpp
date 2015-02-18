@@ -1020,7 +1020,7 @@ bool BrfIface::loadFPGA(const NamedList& params, int& code, String& what, String
 
 bool BrfIface::setSampleRate(bool rx, int& code, String& what, unsigned int* actual)
 {
-#define GSM_SAMPLE_RATE (13e6 / 48)
+#define GSM_SAMPLE_RATE (13e6 / 48) + 1
     unsigned int rate = m_samplesPerSymbol * GSM_SAMPLE_RATE;
     unsigned int result = 0;
     if (!actual)
