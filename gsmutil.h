@@ -452,7 +452,7 @@ public:
      */
     static GSMTxBurst* buildFiller();
 
-    inline bool type()
+    inline int type()
 	{ return m_type; }
 
 private:
