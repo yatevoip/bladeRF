@@ -743,6 +743,37 @@ private:
     FloatVector m_abSync;                // Access burst sync vector
 };
 
+/**
+ * Helper class to show mbts data excenge
+ */
+class TrafficShower
+{
+public:
+    /**
+     * Constructor
+     * @param in True for RX false for TX
+     * @param arfcn The arfcn index
+     */
+    TrafficShower(bool in,unsigned int arfcn);
+
+    /**
+     * Parse a list of arguments
+     * @param args List of arguments
+     */
+    void parse(const ObjList& args);
+
+    /**
+     * Show a burst
+     */
+    void show(GSMBurst* burst);
+private:
+    bool m_show;
+    bool m_in;
+    unsigned int m_arfcn;
+    int m_modulus;
+    bool m_table[8][102];
+};
+
 
 typedef SigProcVector<GSMTxBurst*> GSMTxBurstPtrVector;
 
@@ -849,8 +880,9 @@ public:
 
     /**
      * Constructor
+     * @param index Carrier index.
      */
-    ARFCN();
+    ARFCN(unsigned int index);
 
     /**
      * Destructor, stop the ARFCN
@@ -945,7 +977,7 @@ public:
      * @param current The curent noise level
      */
     void addAverageNoise(float current);
-    
+
     /**
      * Obtain the averege noise level
      * @return The average noise level for this arfcn
@@ -958,7 +990,7 @@ public:
      * @param dest The destination buffer for data to be dumped
      */
     void dumpSlotsDelay(String& dest);
-    
+
     /**
      * Add delaySpread to slot
      * @param index Slot index
@@ -978,6 +1010,14 @@ public:
      */
     inline unsigned int getFillerModulus(unsigned int tn)
 	{ return m_slots[tn].modulus; }
+
+    /**
+     * Set traffic showing arguments
+     * @param in True to set the arguments for the traffic received from mbts into tranceiver
+     * @param args List of arguments
+     */
+    inline void showTraffic(bool in,const ObjList& args)
+	{ (!in ? m_txTraffic : m_rxTraffic).parse(args); }
 
 protected:
     /**
@@ -1043,6 +1083,8 @@ protected:
     uint64_t m_rxBursts;                 // Received bursts
     uint64_t m_rxDroppedBursts;          // Dropped Rx bursts
     float m_averegeNoiseLevel;           // Averege noise level
+    TrafficShower m_rxTraffic;           // RX traffic parameters
+    TrafficShower m_txTraffic;           // TX traffic parameters
 
 private:
     void dropRxBurst(const char* reason = 0, const GSMTime& t = GSMTime(),
@@ -1076,8 +1118,9 @@ class ARFCNSocket : public ARFCN
 public:
     /**
      * Constructor
+     * @param index The arfcn index.
      */
-    ARFCNSocket();
+    ARFCNSocket(unsigned int index);
 
     /**
      * Destructor, stop the ARFCN

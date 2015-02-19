@@ -1269,7 +1269,7 @@ bool Transceiver::sendBurst(GSMTime& time)
 #endif
 	if (!burst)
 	    continue;
-	if (time.tn() == 0 && i == 0) {
+	if (time.tn() == 0 && i == 0 && burst->type() != 0) {
 	    switch (t3) {
 		case 0:
 		case 10:
@@ -1686,10 +1686,9 @@ bool Transceiver::resetARFCNs(unsigned int arfcns, int port, const String* rAddr
     m_arfcn = new ARFCN*[m_arfcnCount];
     for (unsigned int i = 0; i < m_arfcnCount; i++) {
 	if (rAddr)
-	    m_arfcn[i] = new ARFCNSocket;
+	    m_arfcn[i] = new ARFCNSocket(i);
 	else
-	    m_arfcn[i] = new ARFCN;
-	m_arfcn[i]->m_arfcn = i;
+	    m_arfcn[i] = new ARFCN(i);
 	m_arfcn[i]->setTransceiver(*this,"ARFCN[" + String(i) + "]");
 	m_arfcn[i]->debugChain(this);
 	GSMTxBurst* filler = 0;
@@ -2089,6 +2088,41 @@ int Transceiver::handleCmdCustom(String& cmd, String* rspParam, String* reason)
 	FileDataDumper::stop(s_dumper);
 	return CmdEOk;
     }
+    if (cmd.startSkip("show-mbts-traffic ",false)) {
+	ObjList* split = cmd.split(' ',false);
+	ObjList* o = split->skipNull();
+	if (!o) {
+	    TelEngine::destruct(split);
+	    return CmdEFailure;
+	}
+	int arfcn = (static_cast<String*>(o->get()))->toInteger(-1);
+	if (arfcn < 0 || arfcn > 4) {
+	    Debug(this,DebugNote,"Invalid ARFCN index %d.",arfcn);
+	    TelEngine::destruct(split);
+	    return CmdEFailure;
+	}
+	o = o->skipNext();
+	if (!o) {
+	    Debug(this,DebugNote,"Unable to obtain direction.");
+	    TelEngine::destruct(split);
+	    return CmdEFailure;
+	}
+	String* direct = static_cast<String*>(o->get());
+	bool direction = *direct == YSTRING("out");
+	o = o->skipNext();
+	if (!o) {
+	    TelEngine::destruct(split);
+	    return CmdEFailure;
+	}
+	m_arfcn[arfcn]->showTraffic(direction,*o);
+	TelEngine::destruct(split);
+	return CmdEOk;
+    }
+    if (cmd.startSkip("show-mbts-traffic",false)) {
+	Output("mbts radio show-mbts-traffic arfcn[0,1,2-3] in/out enable[true/false] timeslot[0,1,5-7] devider[0 to 51] devider pos[1,11,21,31,41]");
+	return CmdEOk;
+    }
+
     if (m_radio)
 	return m_radio->command(cmd,rspParam,reason);
     return CmdEUnkCmd;
@@ -2201,7 +2235,7 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
     }
     if (len < ARFCN_RXBURST_LEN)
 	return false;
-    
+
     // Use the center values of the input data to calculate the power level.
     float power = SignalProcessing::computePower(b.m_data.data(),
 	b.m_data.length(),4,0.2, (148 - 4) / 2);
@@ -2212,7 +2246,7 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
 
     noise += SignalProcessing::computePower(b.m_data.data(),
 	b.m_data.length(),2,0.5,0);
-    
+
     noise /= 2;
 
     a->addAverageNoise(10 * ::log10f(noise));
@@ -2242,18 +2276,18 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
 	return false;
 #endif
     }
-    
+
     Debug(a,DebugAll,"processRadioBurst ARFCN %d FN %d TN %d T2 %d T3 %d. Level %f, noise %f, SNR %f powerDb %g low SNR %s lowPower %s, burst type %s",
 	   arfcn, t.fn(),slot.slot,t.fn() % 26,t.fn() % 51,power, noise, SNR,b.m_powerLevel,String::boolText(SNR < m_snrThreshold),String::boolText(b.m_powerLevel < m_burstMinPower),ARFCN::burstType(bType));
 
     if  (b.m_powerLevel > m_upPowerThreshold) 
 	Debug(a,DebugInfo, "Receiver clipping on ARFCN %d Slot %d, %f dB", arfcn, slot.slot, b.m_powerLevel);
-    
+
     SignalProcessing::applyMinusPIOverTwoFreqShift(b.m_data);
-    
+
     FloatVector* trainingSeq = 0;
     int start,heLen,center;
-    
+
     if (bType == ARFCN::BurstNormal) {
 	trainingSeq  = &m_nbTSC[m_tsc];
 	start = b.m_data.length() / 2 - GSM_NB_TSC_LEN / 2;
@@ -2266,13 +2300,13 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
 	center = 24; // HardCodded Ask David
 	heLen = GSM_AB_SYNC_LEN + m_maxPropDelay;
     }
-    
+
     dumpRxData("correlate-in1",arfcn,"",b.m_data.data() + start,heLen);
     dumpRxData("correlate-in2",arfcn,"",trainingSeq->data(), trainingSeq->length());
-    
+
     ComplexVector he(heLen);
     SignalProcessing::correlate(he,b.m_data,start,heLen,*trainingSeq);
-    
+
     dumpRxData("correlate-out",arfcn,"",he.data(), he.length());
 
     // Find the peak power in the channel estimate.
@@ -2298,15 +2332,15 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
 		arfcn,slot.slot,max, maxIndex, rms, peakOverMean);
     if (peakOverMean < m_peakOverMeanThreshold) {
 #ifndef CALLGRIND_CHECK
-	a->dropRxBurst("low peak / min",t,len,DebugInfo,false);
+	a->dropRxBurst("low peak / min",t,len,DebugInfo,true);
 	return false;
 #endif
     }
-    
-    
+
+
     // TOA error.  Negative for early, positive for late.
     int toaError = maxIndex - center;
-    
+
     DDebug(a,DebugAll,"ARFCN %d Slot %d. TOA error %d", arfcn,slot.slot,toaError);
 
     // indexing relationships
@@ -2316,10 +2350,10 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
 
     // TOA error should not exceed +/-2 for a normal burst.
     // It indicates a failure of the closed loop timing control.
-    
+
     if (bType == ARFCN::BurstNormal && (toaError > 2 || toaError < -2))
 	Debug(a,DebugAll,"ARFCN %d Slot %d. Excessive TOA error %d, peak/mean %f",arfcn,slot.slot, toaError, peakOverMean);
-   
+
     // Shift the received signal to compensate for TOA error.
     // This shifts the signal so that the max power image is aligned to the expected position.
     // The alignment error is +/- 1/2 symbol period;
@@ -2329,7 +2363,7 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
 	    b.m_data[i] = b.m_data[i + toaError];
 	for (int i = 0; i < -toaError; i++)
 	    b.m_data[i].set(0,0);
-    } else if (toaError != 0){
+    } else if (toaError != 0) {
 	for (unsigned int i = 0; i < b.m_data.length() - toaError; i++)
 	    b.m_data[i] = b.m_data[i + toaError];
 	for (unsigned int i = b.m_data.length() - toaError; i < b.m_data.length(); i++)
@@ -2362,12 +2396,12 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
     }
     float delaySpread = sqrt(sumTSq/sumP);
     a->addSlotDelay(slot.slot,delaySpread);
-    
+
     FloatVector v(b.m_data.length());
     Equalizer::equalize(v,b.m_data,he,11);
 
     dumpRxData("demod-u",arfcn,"",v.data(), v.length());
-    
+
     float powerSum = 0;
     // Calculate the middle without guard period
     for (unsigned int i = 72; i <= 76;i++)
@@ -2439,6 +2473,7 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
     if (!notified && !tsNotif)
 	Debug(DebugTest,"Got good burst!!FN %d TN %d T2 %d T3 %d",t.fn(),t.tn(),t.fn() % 26,t.fn() % 51);
 #endif
+    a->m_rxTraffic.show(&b);
     return true;
 }
 
@@ -2752,6 +2787,114 @@ void TransceiverQMF::initAccessBurstSync()
 	m_abSync[i] = *p ? s_accessScv : -s_accessScv;
 }
 
+void setBool(bool* table, unsigned int tableLen, const String& cond)
+{
+    ::memset(table,0,tableLen * sizeof(bool));
+    ObjList* commaSplit = cond.split(',',false);
+    for (ObjList* o = commaSplit->skipNull();o;o = o->skipNext()) {
+	String* s = static_cast<String*>(o->get());
+	if (s->find('-') == -1) {
+	    int i = s->toInteger(-1);
+	    if (i < 0 || (unsigned int)i >= tableLen) {
+		Debug(DebugNote,"Invalid index %d in condition %s",i,cond.c_str());
+		continue;
+	    }
+	    table[i] = true;
+	    continue;
+	}
+	ObjList* min = s->split('-',false);
+	if (min->count() != 2) {
+	    Debug(DebugNote,"Invalid range count %d for cmd %s",min->count(),cond.c_str());
+	    TelEngine::destruct(min);
+	    continue;
+	}
+	int start = (static_cast<String*>((*min)[0]))->toInteger(-1);
+	int end   = (static_cast<String*>((*min)[1]))->toInteger(-1);
+	TelEngine::destruct(min);
+	if (start < 0 || (unsigned int)start >= tableLen) {
+	    Debug(DebugNote,"Invalid range interval start %d for cmd %s",start,cond.c_str());
+	    TelEngine::destruct(min);
+	    continue;
+	}
+	if (end < start || (unsigned int)end >= tableLen) {
+	    Debug(DebugNote,"Invalid range interval start %d end %d tableLen %d for cmd %s",start,end,tableLen,cond.c_str());
+	    TelEngine::destruct(min);
+	    continue;
+	}
+	for (int i = start;i <= end;i++)
+	    table[i] = true;
+    }
+    TelEngine::destruct(commaSplit);
+}
+
+//
+// TrafficShower
+//
+TrafficShower::TrafficShower(bool in,unsigned int arfcn)
+    : m_show(false), m_in(in), m_arfcn(arfcn), m_modulus(51)
+{
+    ::memset(*m_table,0,8 * 102 * sizeof(bool));
+}
+
+
+// Parse the list of arguments
+// must be: on/off timeslot/s devider devider range
+void TrafficShower::parse(const ObjList& args)
+{
+    ObjList* o = args.skipNull();
+    if (!o)
+	return;
+    String* onoff = static_cast<String*>(o->get());
+    m_show = onoff->toBoolean();
+    if (!m_show)
+	return;
+    o = o->skipNext();
+    if (!o) { // Show all
+	::memset(*m_table,1,8 * 102 * sizeof(bool));
+	return;
+    }
+    bool ts[8];
+    setBool(ts,8,*(static_cast<String*>(o->get())));
+    o = o->skipNext();
+    if (!o) {
+	for (unsigned int i = 0;i < 8;i++) {
+	    if (!ts[i])
+		continue;
+	    ::memset(m_table[i],102,102 * sizeof(bool));
+	}
+	return;
+    }
+    m_modulus = (static_cast<String*>(o->get()))->toInteger(-1);
+    if (m_modulus < 0 || m_modulus > 102) {
+	Debug(DebugNote,"Invalid Modulus %d switching to 51",m_modulus);
+	m_modulus = 51;
+    }
+    o = o->skipNext();
+
+    String* r = 0;
+    if (o)
+	r = static_cast<String*>(o->get());
+    for (unsigned int i = 0;i < 8;i++) {
+	if (!ts[i])
+	    continue;
+	if (r)
+	    setBool(m_table[i],102,*r);
+	else
+	    ::memset(m_table[i],102,102 * sizeof(bool));
+    }
+}
+
+void TrafficShower::show(GSMBurst* burst)
+{
+    if (!m_show || !burst)
+	return;
+    int mod = burst->time().fn() % m_modulus;
+    if (!m_table[burst->time().tn()][mod])
+	return;
+    Debug(DebugNote,"%s burst, ARFCN %d, Time (%d:%d), Modulus %d",
+	  m_in ? "Received" : "Sending",m_arfcn,burst->time().fn(),
+	  burst->time().tn(),mod);
+}
 
 //
 // TxFillerTable
@@ -2792,7 +2935,7 @@ GSMTxBurst** TxFillerTable::fillerHolder(const GSMTime& time)
 //
 // ARFCN
 //
-ARFCN::ARFCN()
+ARFCN::ARFCN(unsigned int index)
     : m_mutex(false,"ARFCN"),
     m_rxQueue(24,"ARFCNRx"),
     m_radioInThread(0),
@@ -2800,7 +2943,9 @@ ARFCN::ARFCN()
     m_rxBursts(0),
     m_rxDroppedBursts(0),
     m_averegeNoiseLevel(0),
-    m_arfcn(0),
+    m_rxTraffic(true,index),
+    m_txTraffic(false,index),
+    m_arfcn(index),
     m_fillerTable(this),
     m_txMutex(false,"ARFCNTx")
 {
@@ -3194,8 +3339,8 @@ void ARFCN::dumpSlotsDelay(String& dest)
 //
 // ARFCNSocket
 //
-ARFCNSocket::ARFCNSocket()
-    : m_data("data",false,5),
+ARFCNSocket::ARFCNSocket(unsigned int index)
+    : ARFCN(index), m_data("data",false,5),
     m_ctrl("control"),
     m_dataReadThread(0)
 {
@@ -3292,6 +3437,7 @@ void ARFCNSocket::runReadDataSocket()
 	burst->buildTxData(arfcn(),transceiver()->signalProcessing(),&tmpV,&tmpW,tmp);
 	tmp.clear(false);
 	addBurst(burst);
+	m_txTraffic.show(burst);
     }
 }
 
