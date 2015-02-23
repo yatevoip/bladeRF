@@ -28,11 +28,12 @@
 using namespace TelEngine;
 
 // Laurent Pulse Approximation default table
-static const float s_laurentPADef[] = {
+/*static const float s_laurentPADef[] = {
     0.02692, 0.07322, 0.14196, 0.23320, 0.34342, 0.46566, 0.59039, 0.70711,
     0.80643, 0.88108, 0.92690, 0.94228, 0.92690, 0.88108, 0.80643, 0.70711,
     0.59039, 0.46566, 0.34342, 0.23320, 0.14196, 0.07322, 0.02692
-};
+};*/
+static const float s_laurentPADef[] = {0.00121, 0.00469, 0.01285, 0.02933, 0.05858, 0.10498, 0.17141, 0.25819, 0.36235, 0.47770, 0.59551, 0.70589, 0.79973, 0.87026, 0.91361, 0.92818, 0.91361, 0.87026, 0.79973, 0.70589, 0.59551, 0.47770, 0.36235, 0.25819, 0.17141, 0.10498, 0.05858, 0.02933, 0.01285, 0.00469, 0.00121};
 
 static inline unsigned int sigProcIters(unsigned int len, unsigned int step)
 {
@@ -187,6 +188,28 @@ void SignalProcessing::convolution(ComplexVector& out, const ComplexVector& fVec
     }
     out.resize(fVect.length() - gVect.length());
     Complex* x = out.data();
+    unsigned int Lp_1 = gVect.length() - 1;
+    const Complex* parseF = fVect.data();
+    const float* gLast = gVect.data() + Lp_1;
+    for (unsigned int n = out.length(); n; --n, ++x, ++parseF) {
+	const Complex* f = parseF;
+	const float* g = gLast;
+	// We don't reset the destination vector (it might contain old data)
+	// For the first index just set the product in destination
+	Complex::multiplyF(*x,*f,*g);
+	// Multiply the remaining
+	for (unsigned int conv = Lp_1; conv; --conv) {
+	    ++f;
+	    --g;
+	    Complex::sumMulF(*x,*f,*g);
+	}
+    }
+/*    if (!gVect.length() || fVect.length() < gVect.length()) {
+	out.resize(fVect.length(),true);
+	return;
+    }
+    out.resize(fVect.length() - gVect.length());
+    Complex* x = out.data();
     unsigned int Lp_1 = gVect.length() / 2;
     const Complex* parseF = fVect.data();
     for (unsigned int n = 0;n < out.length(); n++, ++x, ++parseF) {
@@ -200,7 +223,7 @@ void SignalProcessing::convolution(ComplexVector& out, const ComplexVector& fVec
 	    g++;
 	}
 	Complex::sumMulF(*x,*f,*g);
-    }
+    }*/
 }
 
 // Sum the ARFCN frequency shift vectors
