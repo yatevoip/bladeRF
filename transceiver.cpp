@@ -1285,6 +1285,8 @@ bool Transceiver::sendBurst(GSMTime& time)
 	    burst = a->getBurst(time);
 	else
 	    delBurst = true;
+	if (burst && a->m_slots[time.tn()].type == ARFCN::ChanIGPRS)
+	    delBurst = true;
 	if (!burst) {
 	    if (sync) {
 		m_sendBurstBuf.resize(m_sendBurstBuf.length());
@@ -3875,7 +3877,6 @@ bool RadioIface::sendData(const ComplexVector& data, const GSMTime& time)
 	if (m_loopbackArray) {
 	    if (m_loopbackArray->length() == 1251) {
 		t.assign((*m_loopbackArray)[1250].real(),(*m_loopbackArray)[1250].imag());
-		Debug(DebugTest,"Loopback data set Time to %d %d",t.fn(),t.tn());
 		outLen = 1250;
 	    }
 	    // TODO add Loopback time
