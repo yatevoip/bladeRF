@@ -798,8 +798,9 @@ public:
     /**
      * Constructor
      * @param arfcn The ARFCN which owns this shaper
+     * @param index The ARFCN index
      */
-    TrafficShaper(ARFCN* arfcn);
+    TrafficShaper(ARFCN* arfcn, unsigned int index);
 
     /**
      * Get shaped traffic.

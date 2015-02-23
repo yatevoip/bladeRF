@@ -1305,11 +1305,15 @@ bool Transceiver::sendBurst(GSMTime& time)
 	    continue;
 	if (time.tn() == 0 && i == 0 && burst->type() != 0)
 	    checkType(*burst,time,!addFiller);
-	if (first)
-	    m_sendBurstBuf.resize(burst->txData().length());
-	first = false;
+	if (first) {
+	    if (m_sendBurstBuf.length() != burst->txData().length())
+		m_sendBurstBuf.resize(burst->txData().length());
+	    m_sendBurstBuf.copy(burst->txData());
+	    Complex::multiply(m_sendBurstBuf.data(),m_sendBurstBuf.length(),m_signalProcessing.arfcnFS(i)->data(),m_signalProcessing.arfcnFS(i)->length());
+	    first = false;
+	} else
+	    Complex::sumMul(m_sendBurstBuf.data(),m_sendBurstBuf.length(),burst->txData().data(),burst->txData().length(),m_signalProcessing.arfcnFS(i)->data(),m_signalProcessing.arfcnFS(i)->length());
 
-	Complex::sumMul(m_sendBurstBuf.data(),m_sendBurstBuf.length(),burst->txData().data(),burst->txData().length(),m_signalProcessing.arfcnFS(i)->data(),m_signalProcessing.arfcnFS(i)->length());
 	if (delBurst) {
 	    TelEngine::destruct(burst);
 	    continue;
@@ -2955,10 +2959,12 @@ void TrafficShower::show(GSMBurst* burst)
 //
 // TrafficShaper
 //
-TrafficShaper::TrafficShaper(ARFCN* arfcn)
+TrafficShaper::TrafficShaper(ARFCN* arfcn, unsigned int index)
     : m_arfcn(arfcn)
 {
-    ::memset(m_table,arfcn ? arfcn->arfcn() : -1,8 * sizeof(int));
+    for (unsigned int i = 0;i < 8;i++)
+	m_table[i] = index;
+    //::memset(m_table,index,8 * sizeof(int));
 }
 
 GSMTxBurst* TrafficShaper::getShaped(const GSMTime& t)
@@ -2991,7 +2997,8 @@ void TrafficShaper::parse(ObjList* args)
 {
     if (!m_arfcn || !args)
 	return;
-    ::memset(m_table,m_arfcn->arfcn(),8 * sizeof(int));
+    for (unsigned int i = 0;i < 8;i++)
+	m_table[i] = m_arfcn->arfcn();
     ObjList* o = args->skipNull();
     if (!o)
 	return;
@@ -3056,7 +3063,7 @@ ARFCN::ARFCN(unsigned int index)
     m_arfcn(index),
     m_fillerTable(this),
     m_txMutex(false,"ARFCNTx"),
-    m_shaper(this)
+    m_shaper(this,index)
 {
     for (uint8_t i = 0; i < 8; i++) {
 	m_slots[i].slot = i;
