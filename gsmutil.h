@@ -414,14 +414,13 @@ public:
 
     /**
      * Build TX data if not already done
-     * @param arfcn The ARFCN requesting it
      * @param proc The signal processor
      * @param tmpV Optional temporary buffer to be passed to signal processing
      * @param tmpW Optional temporary buffer to be passed to signal processing
      * @param buf Optional buffer to parse, use this burst if empty
      * @return TX data
      */
-    const ComplexVector& buildTxData(unsigned int arfcn, const SignalProcessing& proc,
+    const ComplexVector& buildTxData(const SignalProcessing& proc,
 	FloatVector* tmpV = 0, ComplexVector* tmpW = 0,
 	const DataBlock& buf = DataBlock::empty());
 
@@ -452,9 +451,43 @@ public:
      */
     static GSMTxBurst* buildFiller();
 
-    inline int type()
+    /**
+     * Get burst type
+     * NOTE this is for testing and is not reliable
+     * MBTS modifications must be done!
+     * @return Burst type.
+     */
+    inline int type() const
 	{ return m_type; }
 
+    /**
+     * Get "void air: burst; A burst with txdata containing only 0
+     * @param sigproc The signal processor
+     * @return The void air burst.
+     */
+    static GSMTxBurst* getVoidAirBurst(const SignalProcessing& sig)
+    {
+	GSMTxBurst* t = new GSMTxBurst();
+	t->m_txData.resize(sig.gsmSlotLen());
+	return t;
+    }
+
+    /**
+     * Get a copy of the burst.
+     * @param burst The original burst or 0
+     * @return A copy of the burst or 0.
+     */
+    static GSMTxBurst* getCopy(const GSMTxBurst* burst)
+    {
+	if (!burst)
+	    return 0;
+	GSMTxBurst* ret = new GSMTxBurst();
+	ret->m_txData.copy(burst->m_txData);
+	ret->m_powerLevel = burst->m_powerLevel;
+	ret->m_filler = burst->m_filler;
+	ret->m_type = ret->m_type;
+	return ret;
+    }
 private:
     ComplexVector m_txData;
     float m_powerLevel;

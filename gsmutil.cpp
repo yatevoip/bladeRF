@@ -65,17 +65,15 @@ const int8_t* GSMUtils::abSyncTable()
 // GSMTxBurst
 //
 // Build TX data
-const ComplexVector& GSMTxBurst::buildTxData(unsigned int arfcn,
-    const SignalProcessing& proc, FloatVector* tmpV, ComplexVector* tmpW,
-    const DataBlock& buf)
+const ComplexVector& GSMTxBurst::buildTxData( const SignalProcessing& proc,
+	FloatVector* tmpV, ComplexVector* tmpW,const DataBlock& buf)
 {
     if (m_txData.length())
 	return m_txData;
     const DataBlock& tmp = buf.length() ? buf : *static_cast<const DataBlock*>(this);
-    if (tmp.length()) {
+    if (tmp.length())
 	proc.modulate(m_txData,tmp.data(0),tmp.length(),tmpV,tmpW);
-	proc.freqShift(m_txData,arfcn);
-    }
+    // Due testing purposes the frequency shifting is done on send time.
     return m_txData;
 }
 
@@ -157,15 +155,15 @@ void GSMRxBurst::fillEstimatesBuffer()
     //   4 bytes GSM frame number, big endian
     //   1 byte power level
     //   2 bytes correlator timing offset (timing advance error)
-    m_timingError *= 256;
+    int16_t toa = m_timingError * 256;
     *buf++ = m_time.tn();
     *buf++ = (int8_t)(m_time.fn() >> 24);
     *buf++ = (int8_t)(m_time.fn() >> 16);
     *buf++ = (int8_t)(m_time.fn() >> 8);
     *buf++ = (int8_t)m_time.fn();
     *buf++ = (int8_t)-m_powerLevel;
-    *buf++ = (int8_t)((int)m_timingError >> 8);
-    *buf++ = (int8_t)m_timingError;
+    *buf++ = (int8_t)(toa >> 8);
+    *buf++ = (int8_t)toa;
 }
 
 /* vi: set ts=8 sw=4 sts=4 noet: */

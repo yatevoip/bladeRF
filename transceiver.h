@@ -524,6 +524,13 @@ public:
      */
     static const TokenDict* dictStateName();
 
+    /**
+     * Get TX test burst
+     * @return TX test burst or 0 if not setted,
+     * NOTE the caller does not own the burst
+     */
+    GSMTxBurst* getTxTestBurst()
+	{ return m_txTestBurst; }
 protected:
     /**
      * Process received radio data
@@ -555,6 +562,14 @@ protected:
      */
     virtual void dumpFreqShift(unsigned int index) const
 	{ }
+
+    /**
+     * Helper method to check if the burst type is matching the timeslot and the time.
+     * @param burst, The mburst to be sent.
+     * @param time, The time on which the burst is sent,
+     * @param isFiller True if the burst is a filler one.
+     */
+    void checkType(const GSMTxBurst& burst, const GSMTime& time, bool isFiller);
 
     int m_state;                         // Transceiver state
     Mutex m_stateMutex;                  // Serialize state change
@@ -774,6 +789,34 @@ private:
     bool m_table[8][102];
 };
 
+/**
+ * Helper class to shape the tx traffic
+ */
+class TrafficShaper
+{
+public:
+    /**
+     * Constructor
+     * @param arfcn The ARFCN which owns this shaper
+     */
+    TrafficShaper(ARFCN* arfcn);
+
+    /**
+     * Get shaped traffic.
+     * @param t The time of the shaped burst.
+     * @return 0 If the traffic is not shaped. The shaping burst otherwise.
+     */
+    GSMTxBurst* getShaped(const GSMTime& t);
+
+    /**
+     * Initialize this shaper.
+     * @param args List of arguments
+     */
+    void parse(ObjList* args);
+private:
+    int m_table[8];
+    ARFCN* m_arfcn;
+};
 
 typedef SigProcVector<GSMTxBurst*> GSMTxBurstPtrVector;
 
@@ -1019,6 +1062,13 @@ public:
     inline void showTraffic(bool in,const ObjList& args)
 	{ (!in ? m_txTraffic : m_rxTraffic).parse(args); }
 
+    /**
+     * Helper method to get a filler burst.
+     * @param t Time of the filler burst
+     * @return The filler burst.
+     */
+    inline GSMTxBurst* getFiller(const GSMTime& t)
+	{ return m_fillerTable.get(t); }
 protected:
     /**
      * Move expired and filler bursts filler table
@@ -1103,6 +1153,7 @@ private:
     Mutex m_txMutex;                     // Transmit queue blocker
     ObjList m_txQueue;                   // Transmit queue
     ObjList m_expired;                   // List of expired bursts
+    TrafficShaper m_shaper;              // Traffic shaper
 };
 
 
