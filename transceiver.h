@@ -480,6 +480,20 @@ public:
 	{ return m_error; }
 
     /**
+     * Check if shutdown command was received
+     * @return True if shutdown command was received
+     */
+    inline bool shutdown() const
+	{ return m_shutdown; }
+
+    /**
+     * Check if the transceiver should stop
+     * @return True if the transceiver should stop
+     */
+    inline bool shouldStop() const
+	{ return m_shutdown || m_error || m_exiting; }
+
+    /**
      * Set the minimum power to accept radio bursts
      * @param val New minimum power level to accept
      */
@@ -643,6 +657,7 @@ private:
 
     bool m_error;                        // Fatal error occured
     bool m_exiting;                      // Stopping flag
+    bool m_shutdown;                     // Shutdown command was received
 };
 
 

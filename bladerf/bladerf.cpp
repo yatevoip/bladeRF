@@ -138,8 +138,7 @@ static inline bladerf_module rxtxmod(bool rx)
 static inline bool thShouldExit(BrfIface* ifc)
 {
     return Thread::check(false) ||
-	(ifc->transceiver() &&
-	(ifc->transceiver()->exiting() || ifc->transceiver()->inError()));
+	(ifc->transceiver() && ifc->transceiver()->shouldStop());
 }
 
 static inline unsigned int getUInt(const NamedList& p, const String& param,

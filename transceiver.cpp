@@ -537,7 +537,7 @@ static inline const char* trxStateName(int stat)
 
 static inline bool trxShouldExit(Transceiver* trx)
 {
-    return trx && (trx->exiting() || trx->inError());
+    return trx && trx->shouldStop();
 }
 
 static inline bool thShouldExit(Transceiver* trx)
@@ -964,7 +964,8 @@ Transceiver::Transceiver(const char* name)
     m_dumpOneTx(false),
     m_dumpOneRx(false),
     m_error(false),
-    m_exiting(false)
+    m_exiting(false),
+    m_shutdown(false)
 {
     setTransceiver(*this,name);
     DDebug(this,DebugAll,"Transceiver() [%p]",this);
@@ -1468,7 +1469,6 @@ bool Transceiver::command(const char* str, String* rsp, unsigned int arfcn)
 	    break;
 	case CmdNoise:
 	{
-	    
 	    String dump;
 	    for (unsigned int i = 0;i < m_arfcnCount;i++) {
 		dump << "ARFCN: ";
@@ -2094,6 +2094,12 @@ int Transceiver::handleCmdCustom(String& cmd, String* rspParam, String* reason)
     }
     if (cmd == YSTRING("file-dump")) {
 	FileDataDumper::stop(s_dumper);
+	return CmdEOk;
+    }
+    if (cmd == YSTRING("shutdown")) {
+	Debug(this,DebugInfo,"Received shutdown command");
+	m_shutdown = true;
+	fatalError();
 	return CmdEOk;
     }
     if (cmd.startSkip("show-mbts-traffic ",false)) {
