@@ -2193,7 +2193,7 @@ int Transceiver::handleCmdManageTx(unsigned int arfcn, String& cmd, String* rspP
 //
 TransceiverQMF::TransceiverQMF(const char* name)
     : Transceiver(name),
-    m_halfBandFltCoeffLen(23),
+    m_halfBandFltCoeffLen(11),
     m_tscSamples(26)
 {
     initNormalBurstTSC();
@@ -2631,9 +2631,15 @@ void TransceiverQMF::qmf(const GSMTime& time, unsigned int index)
     if (!(crt.chans && crt.data.data() && crt.data.length()))
 	return;
 
-    if (index == 0 && s_dumper) {
-	s_dumper->addData(crt.data);
-	return;
+    if (index == 0) {
+	if (s_dumper) {
+	    s_dumper->addData(crt.data);
+	    return;
+	}
+	crt.power = 0;
+	for (unsigned int i = 0;i < crt.data.length();i++)
+	    crt.power += crt.data[i].mulConj();
+	crt.power /= crt.data.length();
     }
 
     bool final = (index > 6);
@@ -2657,15 +2663,14 @@ void TransceiverQMF::qmf(const GSMTime& time, unsigned int index)
 	    return;
 	final = false;
     }
+
+    crt.power = 10 * ::log10f(crt.power / crt.data.length());
+
 #ifdef XDEBUG
-    float power = 0;
-    for (unsigned int i = 0;i < crt.data.length();i++)
-	power += crt.data[i].mulConj();
-    power /= crt.data.length();
     String tmp;
     tmp << "QMF[" << index << "] ";
-    Debug(this,DebugAll,"%s len=%u low=%d high=%d powerRaw=%f powerDb=%f [%p]",
-	  tmp.c_str(),crt.data.length(),indexLo,indexHi,power,10 * ::log10f(power),this);
+    Debug(this,DebugAll,"%s len=%u low=%d high=%d powerDb=%f [%p]",
+	  tmp.c_str(),crt.data.length(),indexLo,indexHi,crt.power,this);
 #endif
 #ifdef TRANSCEIVER_DUMP_QMF_IN
     String tmp1;
@@ -2673,6 +2678,8 @@ void TransceiverQMF::qmf(const GSMTime& time, unsigned int index)
     dumpRecvBurst(tmp1,time,crt.data.data(),crt.data.length());
 #endif
     dumpRxData("qmf[",index,"].x",crt.data.data(),crt.data.length());
+    if (crt.power < m_burstMinPower)
+	return;
     // Forward data to ARFCNs
     if (final) {
 	RadioRxData* r = new RadioRxData(time);
@@ -2770,11 +2777,14 @@ void TransceiverQMF::qmfBuildOutputLowBand(QmfBlock& b, ComplexVector& y)
     Complex* yData = y.data();
     Complex* x = b.data.data();
     Complex* w = b.halfBandFilter.data();
+    b.power = 0;
 
     for (unsigned int i = 0;i < y.length();i ++,x += 2,w += 2) {
 	Complex::sum(yData[i],*x,*w);
 	yData[i] *= 0.5f;
+	b.power += yData[i].mulConj();
     }
+    b.power /= y.length();
 }
 
 // Build the QMF high band output
@@ -2788,11 +2798,14 @@ void TransceiverQMF::qmfBuildOutputHighBand(QmfBlock& b, ComplexVector& y)
     Complex* yData = y.data();
     Complex* x = b.data.data();
     Complex* w = b.halfBandFilter.data();
+    b.power = 0;
 
     for (unsigned int i = 0;i < y.length();i ++,x += 2,w += 2) {
 	Complex::diff(yData[i],*x,*w);
 	yData[i] *= 0.5f;
+	b.power += yData[i].mulConj();
     }
+    b.power /= y.length();
 }
 
 void TransceiverQMF::initNormalBurstTSC(unsigned int len)

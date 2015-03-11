@@ -182,7 +182,7 @@ void SignalProcessing::modulate(ComplexVector& out, const uint8_t* b, unsigned i
 void SignalProcessing::convolution(ComplexVector& out, const ComplexVector& fVect,
     const FloatVector& gVect)
 {
-    if (!gVect.length() || fVect.length() < gVect.length()) {
+/*    if (!gVect.length() || fVect.length() < gVect.length()) {
 	out.resize(fVect.length(),true);
 	return;
     }
@@ -203,8 +203,8 @@ void SignalProcessing::convolution(ComplexVector& out, const ComplexVector& fVec
 	    --g;
 	    Complex::sumMulF(*x,*f,*g);
 	}
-    }
-/*    if (!gVect.length() || fVect.length() < gVect.length()) {
+    }*/
+    if (!gVect.length() || fVect.length() < gVect.length()) {
 	out.resize(fVect.length(),true);
 	return;
     }
@@ -223,7 +223,7 @@ void SignalProcessing::convolution(ComplexVector& out, const ComplexVector& fVec
 	    g++;
 	}
 	Complex::sumMulF(*x,*f,*g);
-    }*/
+    }
 }
 
 // Sum the ARFCN frequency shift vectors
