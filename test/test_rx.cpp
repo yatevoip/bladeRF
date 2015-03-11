@@ -92,11 +92,11 @@ float s_powerMin = 1.0;
 static float s_qmfFrequencyShiftParameter[] = {
 	PI / 2,              // 0
 	0.749149017394489,   // 1
-	-0.749149017394489,  // 2
+	2.3924436361953,     // 2
 	-0.821647309400407,  // 3
-	-2.31994534418939,   // 4
+	0.821647309400407,   // 4
 	-0.821647309400407,  // 5
-	-2.31994534418939,   // 6
+	0.821647309400407,   // 6
 	-PI/4,               // 7
 	1,                   // 8
 	-PI/4,               // 9
@@ -505,6 +505,15 @@ float getNoisePower(ComplexVector& dataIn)
 	for (unsigned int i = 0; i<4; i++)
 		power += dataIn[dataIn.length()-i-1].mulConj();
 	return 0.25 * power;
+}
+
+float getPowerFull(ComplexVector& dataIn)
+{
+	unsigned N = dataIn.length();
+	float power = 0;
+	for (unsigned int i = 0; i<N; i++)
+		power += dataIn[i].mulConj();
+	return power / N;
 }
 
 
@@ -987,6 +996,15 @@ extern "C" int main(int argc, const char** argv, const char** envp)
 	TelEngine::destruct(indc);
 	// Run the data trough qmf filter
 	qmf(s_qmfs[0],ind);
+
+	for (unsigned i=0; i<8; i++) {
+		float pLow = getPowerFull(s_qmfs[i]->m_lowData);
+		float pdbLow = 10*log10(pLow);
+		Debug(DebugAll,"Power for QMF %dL is %f dB",i,pdbLow);
+		float pHigh = getPowerFull(s_qmfs[i]->m_highData);
+		float pdbHigh = 10*log10(pHigh);
+		Debug(DebugAll,"Power for QMF %dH is %f dB",i,pdbHigh);
+	}
 	
 	if (!s_qmfs[7]->m_lowData.length()) {
 	    Debug(DebugWarn,"failed to apply QMF filter for Arfcn 0");
