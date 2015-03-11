@@ -622,6 +622,7 @@ protected:
     Mutex m_testMutex;                   // Mutex used to block the access to test burst
     bool m_dumpOneTx;                    // Flag used to dump random Tx bursts
     bool m_dumpOneRx;                    // Flag used to dump random Rx bursts
+    int m_toaShift;                      // TOA shift value to simulate timeing advance
 
 private:
     // Power on the radio if not already done

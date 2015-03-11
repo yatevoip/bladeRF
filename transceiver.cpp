@@ -515,11 +515,11 @@ struct QMFBlockDesc
 static const QMFBlockDesc s_qmfBlock4[15] = {
     {"Q",    0xffffffff, (float)(PI / 2)},
     {"QL",   0xffffffff, (float)(0.749149017394489)},
-    {"QH",   0xffffffff, (float)(-0.749149017394489)},
+    {"QH",   0xffffffff, (float)(2.3924436361953)},
     {"QLL",  0xffffffff, (float)(-0.821647309400407)},
-    {"QLH",  0xffffffff, (float)(-2.31994534418939)},
+    {"QLH",  0xffffffff, (float)(0.821647309400407)},
     {"QHL",  0xffffffff, (float)(-0.821647309400407)},
-    {"QHH",  0xffffffff, (float)(-2.31994534418939)},
+    {"QHH",  0xffffffff, (float)(0.821647309400407)},
     {"QLLL", 0,          (float)(-PI / 4)},
     {"QLLH", 0xffffffff, 0},
     {"QLHL", 1,          (float)(-PI / 4)},
@@ -963,6 +963,7 @@ Transceiver::Transceiver(const char* name)
     m_testMutex(false,"txTest"),
     m_dumpOneTx(false),
     m_dumpOneRx(false),
+    m_toaShift(0),
     m_error(false),
     m_exiting(false),
     m_shutdown(false)
@@ -1327,12 +1328,6 @@ bool Transceiver::sendBurst(GSMTime& time)
     // Reset TX buffer if nothing was set there
     if (first)
 	m_sendBurstBuf.resize(m_signalProcessing.gsmSlotLen(),true);
-#ifdef XDEBUG
-    String dump;
-    m_sendBurstBuf.dump(dump,SigProcUtils::appendComplex);
-    Debug(this,DebugAll,"Sending len=%u at fn=%u tn=%u: %s",
-	m_sendBurstBuf.length(),time.fn(),time.tn(),dump.c_str());
-#endif
     // Send frequency shifting vectors only?
     if (m_sendArfcnFS)
 	m_signalProcessing.sumFreqShift(m_sendBurstBuf,m_sendArfcnFS);
@@ -2153,6 +2148,10 @@ int Transceiver::handleCmdCustom(String& cmd, String* rspParam, String* reason)
 	Output("mbts radio traffic-shape arfcn[0,1,2-3] timeslot[0,1,5-7] value");
 	return CmdEOk;
     }
+    if (cmd.startSkip(YSTRING("toa-shift ")),false) {
+	m_toaShift = cmd.toInteger();
+	return CmdEOk;
+    }
     if (m_radio)
 	return m_radio->command(cmd,rspParam,reason);
     return CmdEUnkCmd;
@@ -2268,7 +2267,7 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
 
     // Use the center values of the input data to calculate the power level.
     float power = SignalProcessing::computePower(b.m_data.data(),
-	b.m_data.length(),4,0.2, (148 - 4) / 2);
+	b.m_data.length(),5,0.2, (148 - 4) / 2);
 
     // Use the last 4 samples of the input data (guard period) to calculate the noise level
     float noise = SignalProcessing::computePower(b.m_data.data(),
@@ -2288,8 +2287,8 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
 #ifdef TRANSCEIVER_DUMP_ARFCN_PROCESS_IN
     a->dumpRecvBurst("processRadioBurst()",t,b.m_data.data(),len);
 #else
-    XDebug(a,DebugAll,"%sprocessRadioBurst() TN=%u FN=%u T2 %d T3 %d len=%u burst_type=%s power %f noise %f SNR %f powerLevel %f [%p]",
-	  a->prefix(),t.tn(),t.fn(),t.fn() % 26, t.fn() % 51,len,ARFCN::burstType(bType),power,noise,SNR,b.m_powerLevel,a);
+    XDebug(a,DebugAll,"processRadioBurst ARFCN %d FN %d TN %d T2 %d T3 %d. Level %f, noise %f, SNR %f powerDb %g low SNR %s lowPower %s, burst type %s",
+	  arfcn, t.fn(),slot.slot,t.fn() % 26,t.fn() % 51,power, noise, SNR,b.m_powerLevel,String::boolText(SNR < m_snrThreshold),String::boolText(b.m_powerLevel < m_burstMinPower),ARFCN::burstType(bType));
 #endif
 
     if (SNR < m_snrThreshold) {
@@ -2307,11 +2306,11 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
 #endif
     }
 
-    Debug(a,DebugAll,"processRadioBurst ARFCN %d FN %d TN %d T2 %d T3 %d. Level %f, noise %f, SNR %f powerDb %g low SNR %s lowPower %s, burst type %s",
-	   arfcn, t.fn(),slot.slot,t.fn() % 26,t.fn() % 51,power, noise, SNR,b.m_powerLevel,String::boolText(SNR < m_snrThreshold),String::boolText(b.m_powerLevel < m_burstMinPower),ARFCN::burstType(bType));
-
-    if  (b.m_powerLevel > m_upPowerThreshold) 
+    static unsigned int s_lastPowerWarn = 0;
+    if  (b.m_powerLevel > m_upPowerThreshold && s_lastPowerWarn < t.fn()) {
 	Debug(a,DebugInfo, "Receiver clipping on ARFCN %d Slot %d, %f dB", arfcn, slot.slot, b.m_powerLevel);
+	s_lastPowerWarn = t.fn() + 217; // 1 sec = 216.(6)
+    }
 
     SignalProcessing::applyMinusPIOverTwoFreqShift(b.m_data);
 
@@ -2358,11 +2357,11 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
 	return false;
     }
     float peakOverMean = max / rms;
-    Debug(a,DebugAll,"ARFCN %d Slot %d. chan max %f @ %d, rms %f, peak/mean %f",
+    XDebug(a,DebugAll,"ARFCN %d Slot %d. chan max %f @ %d, rms %f, peak/mean %f",
 		arfcn,slot.slot,max, maxIndex, rms, peakOverMean);
     if (peakOverMean < m_peakOverMeanThreshold) {
 #ifndef CALLGRIND_CHECK
-	a->dropRxBurst("low peak / min",t,len,DebugInfo,true);
+	a->dropRxBurst("low peak / min",t,len,DebugInfo,false);
 	return false;
 #endif
     }
@@ -2399,6 +2398,9 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
 	for (unsigned int i = b.m_data.length() - toaError; i < b.m_data.length(); i++)
 	    b.m_data[i].set(0,0);
     }
+#ifdef DEBUG
+    toaError += m_toaShift;
+#endif
     b.m_timingError = toaError;
     // Trim and center the channel estimate.
     // This shifts the channel estimate to put the max power peak in the center, +/- 1/2 symbol period.
@@ -2656,10 +2658,14 @@ void TransceiverQMF::qmf(const GSMTime& time, unsigned int index)
 	final = false;
     }
 #ifdef XDEBUG
+    float power = 0;
+    for (unsigned int i = 0;i < crt.data.length();i++)
+	power += crt.data[i].mulConj();
+    power /= crt.data.length();
     String tmp;
     tmp << "QMF[" << index << "] ";
-    Debugger dbg(DebugAll,tmp.c_str(),"len=%u low=%d high=%d [%p]",
-	crt.data.length(),indexLo,indexHi,this);
+    Debug(this,DebugAll,"%s len=%u low=%d high=%d powerRaw=%f powerDb=%f [%p]",
+	  tmp.c_str(),crt.data.length(),indexLo,indexHi,power,10 * ::log10f(power),this);
 #endif
 #ifdef TRANSCEIVER_DUMP_QMF_IN
     String tmp1;
@@ -2692,7 +2698,7 @@ void TransceiverQMF::qmf(const GSMTime& time, unsigned int index)
     dumpRecvBurst(tmp3,time,crt.halfBandFilter.data(),crt.halfBandFilter.length());
 #endif
     dumpRxData("qmf[",index,"].w",crt.halfBandFilter.data(),crt.halfBandFilter.length());
-    
+
     if (indexLo >= 0 && !thShouldExit(this)) {
 	qmfBuildOutputLowBand(crt,m_qmf[indexLo].data);
 	qmf(time,indexLo);
@@ -3005,8 +3011,6 @@ void TrafficShaper::parse(ObjList* args)
 {
     if (!m_arfcn || !args)
 	return;
-    for (unsigned int i = 0;i < 8;i++)
-	m_table[i] = m_arfcn->arfcn();
     ObjList* o = args->skipNull();
     if (!o)
 	return;
@@ -3907,8 +3911,7 @@ bool RadioIface::sendData(const ComplexVector& data, const GSMTime& time)
     const Complex* c = data.data();
     if (!(c && len))
 	return true;
-    float f = m_txPowerScale;
-    f /= (transceiver()->getConfArfcns() * transceiver()->getConfArfcns());
+    float f = m_txPowerScale / transceiver()->getConfArfcns();
     bool haveTest = m_testIncrease > 0;
     while (len && m_txData.free()) {
 	// Apply power scaling
