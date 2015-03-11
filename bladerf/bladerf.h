@@ -84,7 +84,7 @@ public:
     inline BrfIO()
 	: m_buffers(0), m_pos(0), m_timestamp(0),
 	m_mutex(false,"BrfIO"), m_busy(false),
-	m_libBuffers(0), m_count(0), m_current(0),
+	m_libBuffers(0), m_count(0), m_current(0), m_bufSamples(0),
 	m_useSamples(0), m_super(0), m_high(0)
 	{ setBuffers(1,1,false); }
     inline ~BrfIO()

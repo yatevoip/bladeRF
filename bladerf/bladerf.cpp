@@ -1504,6 +1504,22 @@ int BrfIface::handleRxCmds(String& s, String* rspParam, String* reason)
 		return Transceiver::CmdEInvalidParam;
 	    m_rxShowDcInfo = val;
 	}
+    } else if (s.startSkip("vga1",false)) {
+	int vga1;
+	bool ret = getVga(true,true, vga1);
+	if (ret) {
+	    *rspParam << "current: " << vga1 << " min: " <<
+	    BLADERF_TXVGA1_GAIN_MIN << " max: " << BLADERF_TXVGA1_GAIN_MAX;
+	}
+	return tuneCmdReturn(ret);
+    } else if (s.startSkip("vga2",false)) {
+	int vga2;
+	bool ret = getVga(true,false, vga2);
+	if (ret) {
+	    *rspParam << "current: " << vga2 << " min: " <<
+	    BLADERF_TXVGA2_GAIN_MIN << " max: " << BLADERF_TXVGA2_GAIN_MAX;
+	}
+	return tuneCmdReturn(ret);
     }
     else
 	return Transceiver::CmdEUnkCmd;
@@ -1615,7 +1631,6 @@ int BrfIface::handleTxCmds(String& s, String* rspParam, String* reason)
 	    return Transceiver::CmdEInvalidParam;
 	}
 	s = s.substr(index + 1);
-	Debug(DebugTest,"s is %s",s.c_str());
 	int corr = s.toInteger(-50000);
 	if (corr == -50000) {
 	    *rspParam << "unable to determine correction value!";
