@@ -1438,7 +1438,6 @@ bool Transceiver::command(const char* str, String* rsp, unsigned int arfcn)
 	    status = handleCmdSetTsc(arfcn,s,&rspParam);
 	    break;
 	case CmdSetMaxDelay:
-	    DDebug(this,DebugStub,"Set max delay command [%p]",this);
 	    status = 0;
 	    rspParam = s;
 	    break;
@@ -1837,11 +1836,6 @@ int Transceiver::handleCmdTune(bool rx, unsigned int arfcn, String& cmd, String*
 	if (!cmd)
 	    TRX_SET_ERROR_BREAK(CmdEInvalidParam);
 	int freq = cmd.toInteger();
-	static bool s_stub = true;
-	if (s_stub) {
-	    s_stub = false;
-	    Debug(DebugStub,"Please check Transceiver::handleCmdTune()");
-	}
 	// NOTE: Should we add some extra value when using multiple ARFCNs?
 	// Frequency is expected in kHz
 	double val = (double)freq * 1000;

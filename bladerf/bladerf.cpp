@@ -1174,8 +1174,6 @@ int BrfIface::setGain(bool rx, int vga2, bool updError, bool safe, int* setVal)
 	    *setVal = vga2;
     }
     else {
-	// TODO: Check if this is correct
-	Debug(DebugStub,"Please check BrfIface::setGain() for TX");
 	vga1 = BLADERF_TXVGA1_GAIN_MAX;
 	vga2 += BLADERF_TXVGA2_GAIN_MAX;
 	clampInt(vga2,BLADERF_TXVGA2_GAIN_MIN,BLADERF_TXVGA2_GAIN_MAX);
