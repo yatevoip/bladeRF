@@ -174,7 +174,7 @@ public:
      */
     void dumpRxData(const char* prefix, unsigned int index, const char* postfix,
 	    const Complex* c, unsigned int len);
-    
+
     /**
      * Dump RX Debug data
      * @param prefix Data prefix
@@ -669,14 +669,15 @@ private:
 struct QmfBlock
 {
     inline QmfBlock()
-	: chans(false), arfcn(0xffffffff), freqShiftValue(0)
+	: chans(false), arfcn(0xffffffff), freqShiftValue(0), power(0)
 	{}
     bool chans;                          // ARFCN channels availablity in subtree
     unsigned int arfcn;                  // ARFCN
     float freqShiftValue;                // Frequency shift parameter
     ComplexVector data;                  // Input data
     ComplexVector freqShift;             // Frequency shifting vector
-    ComplexVector halfBandFilter;        // Used when applying the half band filter 
+    ComplexVector halfBandFilter;        // Used when applying the half band filter
+    float power;                         // Used to calculate the power level
 };
 
 
@@ -761,8 +762,8 @@ private:
 		b.freqShift.data(),b.data.length());
 	}
     void qmfBuildHalfBandFilter(QmfBlock& b);
-    void qmfBuildOutputLowBand(QmfBlock& b, ComplexVector& y);
-    void qmfBuildOutputHighBand(QmfBlock& b, ComplexVector& y);
+    void qmfBuildOutputLowBand(QmfBlock& b, ComplexVector& y, float* power);
+    void qmfBuildOutputHighBand(QmfBlock& b, ComplexVector& y, float* power);
     void initNormalBurstTSC(unsigned int len = 16);
     void initAccessBurstSync();
 

@@ -1157,7 +1157,7 @@ void Transceiver::runRadioSendData()
 	while (rTime > txTime) {
 	    if (sendBurst(txTime)) {
 		if (m_radio->loopback())
-		    m_radio->getRadioClock(m_txTime);
+		    m_radio->getRadioClock(txTime);
 		else
 		    txTime.incTn();
 		continue;
@@ -2664,7 +2664,7 @@ void TransceiverQMF::qmf(const GSMTime& time, unsigned int index)
 	final = false;
     }
 
-    crt.power = 10 * ::log10f(crt.power / crt.data.length());
+    crt.power = 10 * ::log10f(crt.power);
 
 #ifdef XDEBUG
     String tmp;
@@ -2707,11 +2707,11 @@ void TransceiverQMF::qmf(const GSMTime& time, unsigned int index)
     dumpRxData("qmf[",index,"].w",crt.halfBandFilter.data(),crt.halfBandFilter.length());
 
     if (indexLo >= 0 && !thShouldExit(this)) {
-	qmfBuildOutputLowBand(crt,m_qmf[indexLo].data);
+	qmfBuildOutputLowBand(crt,m_qmf[indexLo].data,&m_qmf[indexLo].power);
 	qmf(time,indexLo);
     }
     if (indexHi >= 0 && !thShouldExit(this)) {
-	qmfBuildOutputHighBand(crt,m_qmf[indexHi].data);
+	qmfBuildOutputHighBand(crt,m_qmf[indexHi].data,&m_qmf[indexHi].power);
 	qmf(time,indexHi);
     }
 }
@@ -2771,20 +2771,20 @@ void TransceiverQMF::qmfBuildHalfBandFilter(QmfBlock& b)
 // x: the input data, kept in b.data
 // w: half band filter data, kept in b.halfBandFilter
 // y[i] = (x[2 * i + 2 * n0] + w[2 * i]) / 2
-void TransceiverQMF::qmfBuildOutputLowBand(QmfBlock& b, ComplexVector& y)
+void TransceiverQMF::qmfBuildOutputLowBand(QmfBlock& b, ComplexVector& y, float* power)
 {
     y.resize(b.data.length() / 2);
     Complex* yData = y.data();
     Complex* x = b.data.data();
     Complex* w = b.halfBandFilter.data();
-    b.power = 0;
+    *power = 0;
 
     for (unsigned int i = 0;i < y.length();i ++,x += 2,w += 2) {
 	Complex::sum(yData[i],*x,*w);
 	yData[i] *= 0.5f;
-	b.power += yData[i].mulConj();
+	*power += yData[i].mulConj();
     }
-    b.power /= y.length();
+    *power /= y.length();
 }
 
 // Build the QMF high band output
@@ -2792,20 +2792,20 @@ void TransceiverQMF::qmfBuildOutputLowBand(QmfBlock& b, ComplexVector& y)
 // x: the input data, kept in b.data
 // w: half band filter data, kept in b.halfBandFilter
 // y[i] = x[2 * i + 2 * n0] - w[2 * i]
-void TransceiverQMF::qmfBuildOutputHighBand(QmfBlock& b, ComplexVector& y)
+void TransceiverQMF::qmfBuildOutputHighBand(QmfBlock& b, ComplexVector& y, float* power)
 {
     y.resize(b.data.length() / 2);
     Complex* yData = y.data();
     Complex* x = b.data.data();
     Complex* w = b.halfBandFilter.data();
-    b.power = 0;
+    *power = 0;
 
     for (unsigned int i = 0;i < y.length();i ++,x += 2,w += 2) {
 	Complex::diff(yData[i],*x,*w);
 	yData[i] *= 0.5f;
-	b.power += yData[i].mulConj();
+	*power += yData[i].mulConj();
     }
-    b.power /= y.length();
+    *power /= y.length();
 }
 
 void TransceiverQMF::initNormalBurstTSC(unsigned int len)
@@ -3017,6 +3017,15 @@ GSMTxBurst* TrafficShaper::getShaped(const GSMTime& t)
 	return GSMTxBurst::getVoidAirBurst(m_arfcn->transceiver()->signalProcessing());
     if (sh == -3)
 	return GSMTxBurst::getCopy(m_arfcn->transceiver()->getTxTestBurst());
+    if (sh == -4) {
+	uint8_t tmp[154];
+	::memset(tmp,0,154);
+	GSMTxBurst* d =  GSMTxBurst::parse(tmp,154);
+	if (!d)
+	    return 0;
+	d->buildTxData(m_arfcn->transceiver()->signalProcessing());
+	return d;
+    }
     return 0;
 }
 
