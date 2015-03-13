@@ -3580,8 +3580,8 @@ void ARFCNSocket::runReadDataSocket()
 	// Transform (modulate + freq shift)
 	burst->buildTxData(transceiver()->signalProcessing(),&tmpV,&tmpW,tmp);
 	tmp.clear(false);
-	addBurst(burst);
 	m_txTraffic.show(burst);
+	addBurst(burst);
     }
 }
 
