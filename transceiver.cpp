@@ -1007,7 +1007,7 @@ bool Transceiver::init(RadioIface* radio, const NamedList& params)
 	const String* rAddr = params.getParam(YSTRING("remoteaddr"));
 	unsigned int nFillers = params.getIntValue(YSTRING("filler_frames"),
 	    FILLER_FRAMES_MIN,FILLER_FRAMES_MIN);
-	m_signalProcessing.initialize(m_oversamplingRate,arfcns);
+	m_signalProcessing.initialize(m_oversamplingRate,arfcns,SignalProcessing::LaurentPANone);
 	int port = rAddr ? params.getIntValue(YSTRING("port")) : 0;
 	const char* lAddr = rAddr ? params.getValue(YSTRING("localaddr"),*rAddr) : 0;
 	if (rAddr &&
