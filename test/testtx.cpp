@@ -54,6 +54,7 @@ const TokenDict s_cmpName[] =
 {
 	{"signalprocessing", CmpFromSignalProcessing},
 	{"config", CmpFromCfg},
+	{"none", CmpNone},
 	{0,0},
 };
 
@@ -61,7 +62,7 @@ static int s_code = 0;
 static Configuration s_cfg;
 static unsigned int s_arfcns = 0;
 static unsigned int s_oversampling = 8;
-static int s_cmpSrc = CmpFromSignalProcessing;
+static int s_cmpSrc = CmpNone;
 static String s_extraInputParams;
 static String s_extraResultParams;
 // Output
@@ -429,8 +430,18 @@ bool BuildTx::test()
 
 	// By hardcoding the Laurent pulse oversampling is hardcoded to 8.
 	// But the QMF design in the receive side hardcodes the oversampling to 8 anyway.
+	// The 31-point filter gives a noise level of -45 dB.
 	static const unsigned Lp = 31;
 	static const float c0[Lp] = {0.00121, 0.00469, 0.01285, 0.02933, 0.05858, 0.10498, 0.17141, 0.25819, 0.36235, 0.47770, 0.59551, 0.70589, 0.79973, 0.87026, 0.91361, 0.92818, 0.91361, 0.87026, 0.79973, 0.70589, 0.59551, 0.47770, 0.36235, 0.25819, 0.17141, 0.10498, 0.05858, 0.02933, 0.01285, 0.00469, 0.00121};
+	// The 29-point filter gives a noise level of -40 dB.
+	//static const unsigned Lp = 29;
+	//static const float c0[Lp] = {0.00469, 0.01285, 0.02933, 0.05858, 0.10498, 0.17141, 0.25819, 0.36235, 0.47770, 0.59551, 0.70589, 0.79973, 0.87026, 0.91361, 0.92818, 0.91361, 0.87026, 0.79973, 0.70589, 0.59551, 0.47770, 0.36235, 0.25819, 0.17141, 0.10498, 0.05858, 0.02933, 0.01285, 0.00469};
+	// The 27-point filter gives a noise level of -30 dB.
+	//static const unsigned Lp = 27;
+	//static const float c0[Lp] = {0.01285, 0.02933, 0.05858, 0.10498, 0.17141, 0.25819, 0.36235, 0.47770, 0.59551, 0.70589, 0.79973, 0.87026, 0.91361, 0.92818, 0.91361, 0.87026, 0.79973, 0.70589, 0.59551, 0.47770, 0.36235, 0.25819, 0.17141, 0.10498, 0.05858, 0.02933, 0.01285};
+	// The 23-point filter gives a noise level of -30 dB.
+	//static const unsigned Lp = 23;
+	//static const float c0[Lp] = {0.02692, 0.07322, 0.14196, 0.23320, 0.34342, 0.46566, 0.59039, 0.70711, 0.80643, 0.88108, 0.92690, 0.94228, 0.92690, 0.88108, 0.80643, 0.70711, 0.59039, 0.46566, 0.34342, 0.23320, 0.14196, 0.07322, 0.02692};
 
 	while (true) {
 		m_failedArfcn = 0xffffff;
@@ -457,7 +468,7 @@ bool BuildTx::test()
 			float g = -1.138 * f2 - 0.527 * f2 * f2;
 			//hp[n] = 0.96 * ::expf(g);
 #endif
-			hp[n] = c0[n];
+			hp[n] = 0.90*c0[n];
 		}
 		CHECKPOINT(LaurentPA,0);
 		// Generate Laurent frequency shift vector
@@ -509,7 +520,7 @@ bool BuildTx::test()
 
 				// DAB - Power ramping - trailing edge.
 				float vTrail = v[147*s_oversampling+rampOffset];
-				v[147*s_oversampling+rampOffset+s_oversampling] = vTrail * 0.5F;
+				v[147*s_oversampling+rampOffset+s_oversampling] = vTrail * 0.71F;
 
 				CHECKPOINT(ARFCNv,&a);
 				// Calculate w: w[n] = v[n] * s[n]
@@ -583,6 +594,30 @@ bool BuildTx::test()
 				Complex* s = m_arfcns[i].m_s.m_data.data();
 				m_y.m_data[n] += x[n] * s[n];
 			}
+		}
+		// Clip the value into the +/-1 range.
+		unsigned clipped = 0;
+		for (unsigned int n = 0; n < m_y.m_data.length(); n++) {
+			Complex r = m_y.m_data[n];
+			if (r.real()>1.0) {
+				m_y.m_data[n].real(1.0);
+				clipped++;
+			}
+			else if (r.real()<-1.0) {
+				m_y.m_data[n].real(-1.0);
+				clipped++;
+			}
+			if (r.imag()>1.0) {
+				m_y.m_data[n].imag(1.0);
+				clipped++;
+			}
+			else if (r.imag()<-1.0) {
+				m_y.m_data[n].imag(-1.0);
+				clipped++;
+			}
+		}
+		if (clipped>0) {
+			Debug(DebugAll, "%d outupt values clipped", clipped);
 		}
 		CHECKPOINT(FreqShift,0);
 		m_checkPoint = CheckPointOk;
@@ -806,7 +841,7 @@ extern "C" int main(int argc, const char** argv, const char** envp)
 	NamedList* general = s_cfg.createSection("general");
 	s_arfcns = (unsigned int)general->getIntValue("arfcns",4,1,4);
 	s_oversampling = (unsigned int)general->getIntValue("oversampling",8,1,8);
-	s_cmpSrc = lookup(general->getValue("compare","signalprocessing"),s_cmpName);
+	s_cmpSrc = lookup(general->getValue("compare","none"),s_cmpName);
 	NamedList* out = s_cfg.createSection("output");
 	s_debug = out->getBoolValue("debug");
 	s_dumpHex = out->getBoolValue("dump_hex");
