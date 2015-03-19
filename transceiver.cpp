@@ -430,6 +430,8 @@ enum Command
     CmdNoHandover,
     CmdSetSlot,
     CmdSetPower,
+    CmdAdjPower,
+    CmdSetTxAtten,
     CmdRxTune,
     CmdTxTune,
     CmdReadFactory,
@@ -449,6 +451,8 @@ static const TokenDict s_cmdName[] = {
     {"NOHANDOVER",  CmdNoHandover},
     {"SETSLOT",     CmdSetSlot},
     {"SETPOWER",    CmdSetPower},
+    {"ADJPOWER",    CmdAdjPower},
+    {"SETTXATTEN",  CmdSetTxAtten},
     {"RXTUNE",      CmdRxTune},
     {"TXTUNE",      CmdTxTune},
     {"READFACTORY", CmdReadFactory},
@@ -1430,6 +1434,12 @@ bool Transceiver::command(const char* str, String* rsp, unsigned int arfcn)
 	case CmdSetPower:
 	    status = handleCmdSetPower(arfcn,s,&rspParam);
 	    break;
+	case CmdAdjPower:
+	    status = handleCmdAdjustPower(arfcn,s,&rspParam);
+	    break;
+	case CmdSetTxAtten:
+	    status = handleCmdSetTxAttenuation(arfcn,s,&rspParam);
+	    break;
 	case CmdRxTune:
 	case CmdTxTune:
 	    status = handleCmdTune(c == CmdRxTune,arfcn,s,&rspParam);
@@ -1815,6 +1825,53 @@ int Transceiver::handleCmdSetPower(unsigned int arfcn, String& cmd, String* rspP
 	if (ok)
 	    break;
 	m_txPower = p;
+	if (rspParam)
+	    *rspParam << p;
+	return 0;
+    }
+    if (rspParam)
+	*rspParam = cmd;
+    return code;
+}
+
+int Transceiver::handleCmdAdjustPower(unsigned int arfcn, String& cmd, String* rspParam)
+{
+    int code = CmdEFailure;
+    while (true) {
+	if (m_state != PowerOn)
+	    TRX_SET_ERROR_BREAK(CmdEInvalidState);
+	// Power can be set for ARFCN 0 only
+	if (arfcn)
+	    TRX_SET_ERROR_BREAK(CmdEInvalidARFCN);
+	if (!cmd)
+	    TRX_SET_ERROR_BREAK(CmdEInvalidParam);
+	int p = cmd.toInteger();
+	m_txPower += p;
+	if (rspParam)
+	    *rspParam << m_txPower;
+	return 0;
+    }
+    if (rspParam)
+	*rspParam = cmd;
+    return code;
+}
+
+int Transceiver::handleCmdSetTxAttenuation(unsigned int arfcn, String& cmd, String* rspParam)
+{
+    int code = CmdEFailure;
+    while (true) {
+	if (m_state != PowerOn)
+	    TRX_SET_ERROR_BREAK(CmdEInvalidState);
+	// Power can be set for ARFCN 0 only
+	if (arfcn)
+	    TRX_SET_ERROR_BREAK(CmdEInvalidARFCN);
+	if (!cmd)
+	    TRX_SET_ERROR_BREAK(CmdEInvalidParam);
+	int p = cmd.toInteger();
+	int ok = m_radio->setTxPower(m_txPower + p);
+	if (ok)
+	    break;
+	m_txAttnOffset = p;
 	if (rspParam)
 	    *rspParam << p;
 	return 0;

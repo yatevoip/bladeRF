@@ -644,6 +644,10 @@ private:
     int handleCmdSetSlot(unsigned int arfcn, String& cmd, String* rspParam);
     // Handle SETPOWER command. Return status code
     int handleCmdSetPower(unsigned int arfcn, String& cmd, String* rspParam);
+    // Handle ADJPOWER command. Return status code.
+    int handleCmdAdjustPower(unsigned int arfcn, String& cmd, String* rspParam);
+    // Handle SETTXATTEN command. Resturn status code.
+    int handleCmdSetTxAttenuation(unsigned int arfcn, String& cmd, String* rspParam);
     // Handle RXTUNE/TXTUNE commands. Return status code
     int handleCmdTune(bool rx, unsigned int arfcn, String& cmd, String* rspParam);
     // Handle SETTSC commands. Return status code
