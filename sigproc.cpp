@@ -157,7 +157,7 @@ void SignalProcessing::modulate(ComplexVector& out, const uint8_t* b, unsigned i
 	// Power ramping - leading edge.
 	v[m_rampOffset - m_oversample] = v[m_rampOffset] * 0.5F;
 	// Power ramping - trailing edge
-	v[m_rampTrailIdx] = v[m_rampTrailIdx - m_oversample] * 0.5F;
+	v[m_rampTrailIdx] = v[m_rampTrailIdx - m_oversample] * 0.71F;
     }
 
     // Calculate w: w[n] = v[n] * s[n]
@@ -182,7 +182,8 @@ void SignalProcessing::modulate(ComplexVector& out, const uint8_t* b, unsigned i
 void SignalProcessing::convolution(ComplexVector& out, const ComplexVector& fVect,
     const FloatVector& gVect)
 {
-/*    if (!gVect.length() || fVect.length() < gVect.length()) {
+#if 0
+    if (!gVect.length() || fVect.length() < gVect.length()) {
 	out.resize(fVect.length(),true);
 	return;
     }
@@ -203,7 +204,8 @@ void SignalProcessing::convolution(ComplexVector& out, const ComplexVector& fVec
 	    --g;
 	    Complex::sumMulF(*x,*f,*g);
 	}
-    }*/
+    }
+#endif
     if (!gVect.length() || fVect.length() < gVect.length()) {
 	out.resize(fVect.length(),true);
 	return;
@@ -214,7 +216,7 @@ void SignalProcessing::convolution(ComplexVector& out, const ComplexVector& fVec
     const Complex* parseF = fVect.data();
     for (unsigned int n = 0;n < out.length(); n++, ++x, ++parseF) {
 	const Complex* f = parseF;
-	const Complex* fe = parseF + gVect.length();
+	const Complex* fe = parseF + gVect.length() - 1;
 	const float* g = gVect.data();
 	for (unsigned int conv = 0; conv < Lp_1; conv++) {
 	    Complex::sumMulFSum(*x,*f,*fe,*g);
@@ -245,9 +247,11 @@ void SignalProcessing::sumFreqShift(ComplexVector& out, unsigned int arfcnMask) 
 void SignalProcessing::generateLaurentPulseAproximation(FloatVector& out,
     LaurentPATable lpaTbl, unsigned int oversample)
 {
-    if (lpaTbl == LaurentPADef)
-	out.assign(s_laurentPADef,sizeof(s_laurentPADef) / sizeof(float));
-    else {
+    if (lpaTbl == LaurentPADef) {
+	out.resize(sizeof(s_laurentPADef) / sizeof(float));
+	for (unsigned int i = 0; i < out.length(); i++)
+	    out[i] = s_laurentPADef[i] * 0.90;
+    } else {
 	Debug(DebugStub,
 	    "SignalProcessing::generateLaurentPulseAproximation() not tested for tbl=%d oversample=%u",
 	    lpaTbl,oversample);

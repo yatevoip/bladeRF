@@ -1007,7 +1007,7 @@ bool Transceiver::init(RadioIface* radio, const NamedList& params)
 	const String* rAddr = params.getParam(YSTRING("remoteaddr"));
 	unsigned int nFillers = params.getIntValue(YSTRING("filler_frames"),
 	    FILLER_FRAMES_MIN,FILLER_FRAMES_MIN);
-	m_signalProcessing.initialize(m_oversamplingRate,arfcns,SignalProcessing::LaurentPANone);
+	m_signalProcessing.initialize(m_oversamplingRate,arfcns);
 	int port = rAddr ? params.getIntValue(YSTRING("port")) : 0;
 	const char* lAddr = rAddr ? params.getValue(YSTRING("localaddr"),*rAddr) : 0;
 	if (rAddr &&
@@ -2374,8 +2374,19 @@ bool TransceiverQMF::processRadioBurst(unsigned int arfcn, ArfcnSlot& slot, GSMR
     // TOA error should not exceed +/-2 for a normal burst.
     // It indicates a failure of the closed loop timing control.
 
-    if (bType == ARFCN::BurstNormal && (toaError > 2 || toaError < -2))
-	Debug(a,DebugAll,"ARFCN %d Slot %d. Excessive TOA error %d, peak/mean %f",arfcn,slot.slot, toaError, peakOverMean);
+    static unsigned int s_lastTOAWarn = 0;
+    static unsigned int s_toaCount = 0;
+    if (bType == ARFCN::BurstNormal && (toaError > 2 || toaError < -2)) {
+	s_toaCount++;
+	if (s_lastTOAWarn < t.fn()) {
+	    Debug(a,DebugAll,"ARFCN %d Slot %d. Excessive TOA error %d, peak/mean %f count %u",arfcn,slot.slot, toaError, peakOverMean,s_toaCount);
+	    s_toaCount = 0;
+	    s_lastTOAWarn = t.fn() + 217;
+	}
+    } else if (s_toaCount && s_lastTOAWarn < t.fn()) {
+	Debug(a,DebugAll,"ARFCN %d Slot %d. Excessive TOA errors count %u",arfcn,slot.slot,s_toaCount);
+	s_toaCount = 0;
+    }
 
     // Shift the received signal to compensate for TOA error.
     // This shifts the signal so that the max power image is aligned to the expected position.
@@ -3855,17 +3866,19 @@ uint64_t RadioIface::initialWriteTs()
 }
 
 // Energize a float value
-static inline float energize(float cv, float div = 1)
+static inline float energize(float cv, float div,unsigned int* clamp)
 {
     if (div != 1)
 	cv *= div;
     static unsigned int s_energizer = 2047; // 2^11 - 1
     float ret = 0;
-    if (cv >= 1)
+    if (cv >= 1) {
 	ret = s_energizer;
-    else if (cv <= -1)
+	(*clamp)++;
+    } else if (cv <= -1) {
 	ret = -s_energizer;
-    else
+	(*clamp)++;
+    } else
 	ret = cv * s_energizer;
     return ret;
 }
@@ -3937,6 +3950,7 @@ bool RadioIface::sendData(const ComplexVector& data, const GSMTime& time)
 	    n = m_txData.free();
 	len -= n;
 	m_txData.advance(n);
+	unsigned int clamp = 0;
 	for (int i = 0; n; n--, c++,i++) {
 	    if (s_dumper) {
 		*b++ = fillValue;
@@ -3944,8 +3958,8 @@ bool RadioIface::sendData(const ComplexVector& data, const GSMTime& time)
 		continue;
 	    }
 	    if (!haveTest) {
-		*b++ = (int16_t)energize(c->real(),f);
-		*b++ = (int16_t)energize(c->imag(),f);
+		*b++ = (int16_t)energize(c->real(),f,&clamp);
+		*b++ = (int16_t)energize(c->imag(),f,&clamp);
 		continue;
 	    }
 	    *b++ = m_testValue;
@@ -3955,6 +3969,9 @@ bool RadioIface::sendData(const ComplexVector& data, const GSMTime& time)
 	    if (m_testValue > m_testMax)
 		m_testValue = m_testMin;
 	}
+	if (clamp != 0)
+	    Debug(this,DebugNote,"Energize clamped %u values!",clamp);
+
 	if (!m_txData.full())
 	    return true;
 	m_txData.m_time = time;
