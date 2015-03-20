@@ -275,10 +275,9 @@ protected:
      * Write data to radio
      * @param data The output data
      * @param scale Power scale factor
-     * @param time The GSM time at which the data is to be sent.
      * @return True on success, false on unrecoverable error
      */
-    virtual bool writeRadio(const ComplexVector& data, float scale, const GSMTime& t);
+    virtual bool writeRadio(const ComplexVector& data, float scale);
 
     /**
      * Start the radio device
@@ -368,6 +367,8 @@ private:
     int m_rxDcAvgI;                      // Current average for I (in-phase) DC RX offset
     int m_rxDcAvgQ;                      // Current average for Q (quadrature) DC RX offset
     int m_rxVga1;                        // Rx VGA1 gain
+    int m_txVga1;                        // Tx VGA1 gain
+    int m_txVga2;                        // Tx VGA2 gain
     BrfIO m_txIO;                        // Tx buffer and related data
     int m_txShowInfo;                    // Output Tx info (min/max values of input buffer)
     bool m_modulated;                    // Flag used in test mode. It says if we should send modulated data or just predefined data.

@@ -364,6 +364,7 @@ BrfIface::BrfIface()
     m_rxDcAvgI(0),
     m_rxDcAvgQ(0),
     m_rxVga1(BLADERF_RXVGA1_GAIN_MAX),
+    m_txVga1(BLADERF_TXVGA1_GAIN_MAX), m_txVga2(BLADERF_TXVGA2_GAIN_MIN),
     m_txShowInfo(0),
     m_modulated(false),
     m_predefinedData(0),
@@ -643,7 +644,7 @@ bool BrfIface::readRadio(RadioIOData& data, unsigned int* samples)
 }
 
 // Write data to radio
-bool BrfIface::writeRadio(const ComplexVector& data, float powerScale, const GSMTime& t)
+bool BrfIface::writeRadio(const ComplexVector& data, float powerScale)
 {
     BRF_TX_SERIALIZE_ON_RET(false,false);
     if (!flag(BrfTxOn)) {
@@ -679,14 +680,6 @@ bool BrfIface::writeRadio(const ComplexVector& data, float powerScale, const GSM
     Debugger wr(DebugNote,"BrfIface::write"," samples=%u ts=" FMT64U " [%p]",
 		data.length(),m_txIO.m_timestamp,this);
 #endif
-    u_int64_t dataTs = t.fn() * 8 * data.length() + t.tn() * data.length();
-    if (dataTs != m_txIO.m_timestamp) {
-	Debug(this,DebugWarn,
-		"%sTx timestamp difference our=" FMT64U " input=" FMT64U " [%p]",
-		prefix(),m_txIO.m_timestamp,dataTs,this);
-	m_txIO.m_pos = 0;
-	m_txIO.m_timestamp = dataTs;
-    }
     unsigned int& nBuf = m_txIO.m_buffers;
     while (consumed < data.length()) {
 #ifdef BRF_DEBUG_SEND
@@ -880,7 +873,10 @@ bool BrfIface::open(const NamedList& params)
 	setCorrection(false,params.getIntValue(YSTRING("TX.OffsetI")),
 	    params.getIntValue(YSTRING("TX.OffsetQ")),true);
 	setGain(true,BLADERF_RXVGA2_GAIN_MIN);
-	setGain(false,BLADERF_TXVGA2_GAIN_MIN);
+	m_txVga1 = params.getIntValue("TX.vga1",BLADERF_TXVGA1_GAIN_MAX);
+	m_txVga2 = params.getIntValue("TX.vga2",BLADERF_RXVGA2_GAIN_MIN);
+	setGainVga(true, false, m_txVga1, true, true);
+	setGainVga(false, false, m_txVga2, true, true);
 	break;
     }
     bool done = thShouldExit(this);
@@ -1168,7 +1164,7 @@ int BrfIface::setGain(bool rx, int vga2, bool updError, bool safe, int* setVal)
 	    *setVal = vga2;
     }
     else {
-	vga1 = BLADERF_TXVGA1_GAIN_MAX;
+	vga1 = m_txVga1;
 	vga2 += BLADERF_TXVGA2_GAIN_MAX;
 	clampInt(vga2,BLADERF_TXVGA2_GAIN_MIN,BLADERF_TXVGA2_GAIN_MAX);
 	if (setVal)
@@ -1206,17 +1202,19 @@ int BrfIface::setGainVga(bool pre, bool rx, int value, bool updError, bool safe)
 	return ok;
     }
     if (pre) {
-	if (rx)
-	    ok = ::bladerf_set_rxvga1(m_dev,value);
-	else
+	if (!rx) {
+	    m_txVga1 = value;
 	    ok = ::bladerf_set_txvga1(m_dev,value);
+	} else
+	    ok = ::bladerf_set_rxvga1(m_dev,value);
     }
-    else if (rx)
-	ok = ::bladerf_set_rxvga2(m_dev,value);
-    else
+    else if (!rx) {
+	m_txVga2 = value;
 	ok = ::bladerf_set_txvga2(m_dev,value);
+    } else
+	ok = ::bladerf_set_rxvga2(m_dev,value);
     if (ok >= 0) {
-	DDebug(this,DebugAll,"%s%s VGA%s gain value set to %d [%p]",
+	Debug(this,DebugAll,"%s%s VGA%s gain value set to %d [%p]",
 	    prefix(),rxtx(rx),(pre ? "1" : "2"),value,this);
 	if (pre) {
 	    if (rx && m_rxVga1 != value) {

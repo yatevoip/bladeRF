@@ -3974,7 +3974,7 @@ bool RadioIface::sendData(const ComplexVector& data, const GSMTime& time)
     float f = m_txPowerScale / transceiver()->getConfArfcns();
     bool haveDumper = s_dumper;
     if (m_testIncrease == 0 && !haveDumper)
-	return writeRadio(data,f,time);
+	return writeRadio(data,f);
 
     int16_t fillValue = 0;
     if (haveDumper) {
@@ -4005,7 +4005,7 @@ bool RadioIface::sendData(const ComplexVector& data, const GSMTime& time)
 	if (m_testValue > m_testMax)
 	    m_testValue = m_testMin;
     }
-    return writeRadio(out,f,time);
+    return writeRadio(out,f);
 }
 
 bool RadioIface::waitSendTx()

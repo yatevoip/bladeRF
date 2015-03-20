@@ -1711,7 +1711,7 @@ protected:
      * @param time The GSM time at which the data is to be sent.
      * @return True on success, false on unrecoverable error
      */
-    virtual bool writeRadio(const ComplexVector& data, float scale, const GSMTime& t) = 0;
+    virtual bool writeRadio(const ComplexVector& data, float scale) = 0;
 
     /**
      * Start the radio device
