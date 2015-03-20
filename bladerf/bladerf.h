@@ -267,16 +267,18 @@ protected:
      * @param data I/O data structure
      * @param samples Optional number of samples to read,
      *  it will be set to actual read samples
-     * @return True on success, on unrecoverable error
+     * @return True on success, false on unrecoverable error
      */
     virtual bool readRadio(RadioIOData& data, unsigned int* samples = 0);
 
     /**
      * Write data to radio
-     * @param data I/O data structure
-     * @return True on success, on unrecoverable error
+     * @param data The output data
+     * @param scale Power scale factor
+     * @param time The GSM time at which the data is to be sent.
+     * @return True on success, false on unrecoverable error
      */
-    virtual bool writeRadio(RadioIOData& data);
+    virtual bool writeRadio(const ComplexVector& data, float scale, const GSMTime& t);
 
     /**
      * Start the radio device
@@ -375,7 +377,6 @@ private:
     BladeRFDump* m_txDump;               // Dump data object for TX
     unsigned int m_loopbackFreq;         // Test loopback frequency
     u_int64_t m_lastBoardTs;             // Last timestamp received from the board
-    bool m_dumpTxTime;                   // Flag used to dump RX time
     DataDumper* m_txDumper;              // TX file data dumper
     DataDumper* m_rxDumper;              // RX file data dumper
 };

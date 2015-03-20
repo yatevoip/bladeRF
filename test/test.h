@@ -77,10 +77,12 @@ protected:
 
     /**
      * Write data to radio
-     * @param data I/O data structure
-     * @return True on success, on unrecoverable error
+     * @param data The output data
+     * @param scale Power scale factor
+     * @param time The GSM time at which the data is to be sent.
+     * @return True on success, false on unrecoverable error
      */
-    virtual bool writeRadio(RadioIOData& data);
+    virtual bool writeRadio(const ComplexVector& data, float scale, const GSMTime& t);
 
     /**
      * Start the radio device

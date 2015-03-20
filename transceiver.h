@@ -1360,7 +1360,7 @@ public:
      * @param rx True for Rx buffer, false to Tx buffer
      */
     inline RadioIOData(bool rx)
-	: m_timestamp(0), m_syncIOWaitMs(0), m_samples(0), m_pos(0),
+	: m_timestamp(0), m_samples(0), m_pos(0),
 	m_rx(rx)
 	{}
 
@@ -1377,20 +1377,6 @@ public:
      */
     inline void timestamp(uint64_t ts)
 	{ m_timestamp = ts; }
-
-    /**
-     * Retrieve synchronous I/O timeout
-     * @return Synchronous I/O timeout in milliseconds
-     */
-    inline unsigned int syncIOWait() const
-	{ return m_syncIOWaitMs; }
-
-    /**
-     * Set the synchronous I/O timeout in milliseconds
-     * @param val Synchronous I/O timeout in milliseconds
-     */
-    inline void syncIOWait(unsigned int val)
-	{ m_syncIOWaitMs = val; }
 
     /**
      * Retrieve the buffer start data pointer
@@ -1494,7 +1480,6 @@ public:
     GSMTime m_time;
 protected:
     uint64_t m_timestamp;                // I/O timestamp
-    unsigned int m_syncIOWaitMs;         // Synchronous I/O timeout (0: async I/O)
     unsigned int m_samples;              // Buffer length in samples
     unsigned int m_pos;                  // Buffer I/O position
     DataBlock m_buffer;                  // The buffer
@@ -1523,7 +1508,7 @@ public:
      * @return Synchronous send timeout in milliseconds
      */
     inline unsigned int syncWriteWaitMs() const
-	{ return m_txData.syncIOWait(); }
+	{ return m_writeTimeout; }
 
     /**
      * Initialize radio
@@ -1715,16 +1700,18 @@ protected:
      * @param data I/O data structure
      * @param samples Optional number of samples to read,
      *  it will be set to actual read samples
-     * @return True on success, on unrecoverable error
+     * @return True on success, false on unrecoverable error
      */
     virtual bool readRadio(RadioIOData& data, unsigned int* samples = 0) = 0;
 
     /**
      * Write data to radio
-     * @param data I/O data structure
-     * @return True on success, on unrecoverable error
+     * @param data Output data
+     * @param scale Power scaling factor
+     * @param time The GSM time at which the data is to be sent.
+     * @return True on success, false on unrecoverable error
      */
-    virtual bool writeRadio(RadioIOData& data) = 0;
+    virtual bool writeRadio(const ComplexVector& data, float scale, const GSMTime& t) = 0;
 
     /**
      * Start the radio device
@@ -1764,7 +1751,8 @@ protected:
     // Radio device data
     float m_txPowerScale;                // Tx power scaling factor
     RadioIOData m_rxData;                // Rx buffer and data
-    RadioIOData m_txData;                // Tx buffer and data
+    unsigned int m_readTimeout;          // Read timeout
+    unsigned int m_writeTimeout;         // Write timeout
     RadioErrors m_rxErrors;              // Receive radio errors
     RadioErrors m_txErrors;              // Send radio errors
 

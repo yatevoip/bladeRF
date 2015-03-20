@@ -3716,7 +3716,7 @@ unsigned int RadioIOData::copy(int16_t* buf, unsigned int samples)
 RadioIface::RadioIface()
     : m_mutex(false,"RadioIface"),
     m_samplesPerSymbol(1), m_readThread(0), m_txPowerScale(1.0), m_rxData(true),
-    m_txData(false), m_powerOn(false), m_clockMutex(false,"RadioClock"),
+    m_readTimeout(0), m_writeTimeout(0) , m_powerOn(false), m_clockMutex(false,"RadioClock"),
     m_txBufferSpace(2,0), m_testMin(0), m_testMax(0), m_testIncrease(0),
     m_testValue(0), m_loopback(false), m_loopbackSleep(0), m_loopbackNextSend(0),
     m_loopbackArray(0), m_showClocks(false)
@@ -3744,7 +3744,6 @@ bool RadioIface::init(const NamedList& params)
     m_txErrors.init(m,b);
     // NOTE: A frame has 156.25 symbols so 8 timeslots = 1250 symbols
     m_rxData.resetInt16(initialReadTs(),1250 * m_samplesPerSymbol);
-    m_txData.resetInt16(initialWriteTs(),1250* 2);
 #ifdef DEBUG
     if (debugAt(DebugAll)) {
 	String tmp;
@@ -3793,15 +3792,13 @@ void RadioIface::powerOff()
     m_mutex.lock();
     bool show = m_powerOn;
     m_powerOn = false;
-    unsigned int wait = m_rxData.syncIOWait() ? (m_rxData.syncIOWait() + 50) : 0;
+    unsigned int wait = m_readTimeout ? (m_readTimeout + 50) : 0;
     TrxWorker::cancelThreads(this,wait,&m_readThread);
     radioPowerOff();
     m_mutex.unlock();
     if (!show)
 	return;
     String tmp;
-    tmp << " tx ts=" << m_txData.timestamp();
-    tmp << " future=" << ((int64_t)m_txData.timestamp() - (int64_t)m_rxData.timestamp());
     tmp << " rx ts=" << m_rxData.timestamp();
     Debug(this,DebugAll,"%sPowered off%s [%p]",prefix(),tmp.c_str(),this);
 }
@@ -3943,23 +3940,6 @@ static inline float energize(float cv, float div,unsigned int* clamp)
 // Send data to radio
 bool RadioIface::sendData(const ComplexVector& data, const GSMTime& time)
 {
-    int16_t fillValue = 0;
-    if (s_dumper) {
-	switch (time.tn() % 4) {
-	    case 0:
-		fillValue = 0;
-		break;
-	    case 1:
-		fillValue = 2047;
-		break;
-	    case 2:
-		fillValue = 0;
-		break;
-	    case 3:
-		fillValue = -2047;
-		break;
-	}
-    }
     // Special case for loopback
     if (m_loopback) {
 	if (m_loopbackNextSend > Time::now()) {
@@ -3991,56 +3971,41 @@ bool RadioIface::sendData(const ComplexVector& data, const GSMTime& time)
 	transceiver()->recvRadioData(r);
 	return true;
     }
-    // NOTE: We are assuming this is done from a single thread
-    // E.g. There is no send buffer protection
-    unsigned int len = data.length();
-    const Complex* c = data.data();
-    if (!(c && len))
-	return true;
     float f = m_txPowerScale / transceiver()->getConfArfcns();
-    bool haveTest = m_testIncrease > 0;
-    while (len && m_txData.free()) {
-	// Apply power scaling
-	int16_t* b = m_txData.buffer();
-	unsigned int n = len;
-	if (n > m_txData.free())
-	    n = m_txData.free();
-	len -= n;
-	m_txData.advance(n);
-	unsigned int clamp = 0;
-	for (int i = 0; n; n--, c++,i++) {
-	    if (s_dumper) {
-		*b++ = fillValue;
-		*b++ = fillValue;
-		continue;
-	    }
-	    if (!haveTest) {
-		*b++ = (int16_t)energize(c->real(),f,&clamp);
-		*b++ = (int16_t)energize(c->imag(),f,&clamp);
-		continue;
-	    }
-	    *b++ = m_testValue;
-	    *b++ = m_testValue;
+    bool haveDumper = s_dumper;
+    if (m_testIncrease == 0 && !haveDumper)
+	return writeRadio(data,f,time);
 
-	    m_testValue += m_testIncrease;
-	    if (m_testValue > m_testMax)
-		m_testValue = m_testMin;
+    int16_t fillValue = 0;
+    if (haveDumper) {
+	switch (time.tn() % 4) {
+	    case 0:
+		fillValue = 0;
+		break;
+	    case 1:
+		fillValue = 2047;
+		break;
+	    case 2:
+		fillValue = 0;
+		break;
+	    case 3:
+		fillValue = -2047;
+		break;
 	}
-	if (clamp != 0)
-	    Debug(this,DebugNote,"Energize clamped %u values!",clamp);
-
-	if (!m_txData.full())
-	    return true;
-	m_txData.m_time = time;
-	if (!writeRadio(m_txData))
-	    return false;
     }
-    if (!len || thShouldExit(transceiver()))
-	return true;
-    Debug(this,DebugWarn,
-	"%sFailed to send %u samples: not enough space in buffer free=%u [%p]",
-	prefix(),len,m_txData.free(),this);
-    return false;
+    static ComplexVector out(data.length());
+    for (unsigned int i = 0;i < out.length();i++) {
+	if (haveDumper) {
+	    out[i].set(fillValue,fillValue);
+	    continue;
+	}
+	out[i].set(m_testValue,m_testValue);
+	
+	m_testValue += m_testIncrease;
+	if (m_testValue > m_testMax)
+	    m_testValue = m_testMin;
+    }
+    return writeRadio(out,f,time);
 }
 
 bool RadioIface::waitSendTx()

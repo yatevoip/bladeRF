@@ -520,12 +520,11 @@ void Equalizer::defaultEqualize(FloatVector& dataOut, const ComplexVector& in1, 
     unsigned int halfL = (in2len - 1) / 2;
     unsigned int length = in2len;
     float* f = dataOut.data();
-    
+
     // The input data should be padded with in2 length.
-    
     // substract represents the amount of data that should be at the start of in1.
     int substract = halfL;
-    
+
     int end1 = halfL + 1;
     for (int i = 0;i < end1; i ++, f ++) {
 	float set = 0;
@@ -536,7 +535,7 @@ void Equalizer::defaultEqualize(FloatVector& dataOut, const ComplexVector& in1, 
 	}
 	(*f) = set;
     }
-    
+
     unsigned int end = in1.length() - end1;
     end += in1.length() % 2;
     for (unsigned int i = end1;i < end; i ++, f ++) {

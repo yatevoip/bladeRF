@@ -85,6 +85,7 @@ enum CheckPoint {
 	ARFCNs,
 	ARFCNTx,
 	FreqShift,
+	EngOut,
 	CheckPointOk
 };
 
@@ -99,6 +100,7 @@ const TokenDict s_pointLabel[] =
 	{"tx", ARFCNTx},
 	{"frequency_shifting", ARFCNs},
 	{"Frequency shifted", FreqShift},
+	{"energize_out", EngOut},
 	{0,0},
 };
 
@@ -112,6 +114,13 @@ String& appendUInt8(String& dest, const uint8_t& val, const char* sep)
 	char s[80];
 	sprintf(s,"%u",val);
 	return dest.append(s,sep);
+}
+
+String& appendInt(String& dest, const int& val, const char* sep)
+{
+    char s[80];
+    sprintf(s,"%d",val);
+    return dest.append(s,sep);
 }
 
 static unsigned int addPName(String& buf, const String& pName, const char* suffix)
@@ -250,6 +259,7 @@ public:
 typedef TestDataVector<uint8_t,true,appendUInt8> TestUint8Unit;
 typedef TestDataVector<float,true,SigProcUtils::appendFloat> TestFloatUnit;
 typedef TestDataVector<Complex,false,SigProcUtils::appendComplex> TestComplexUnit;
+typedef TestDataVector<int,true,appendInt> TestIntUnit;
 
 class TestARFCN : public String
 {
@@ -307,6 +317,7 @@ protected:
 	TestFloatUnit m_laurentPA;
 	TestComplexUnit m_laurentFS;
 	TestComplexUnit m_y;
+	TestIntUnit m_out;
 };
 
 
@@ -401,6 +412,7 @@ BuildTx::BuildTx()
 			BUILD_TEST_UNHEXIFY(m_laurentPA,LaurentPA);
 			BUILD_TEST_UNHEXIFY(m_laurentFS,LaurentFS);
 			BUILD_TEST_UNHEXIFY(m_y,FreqShift);
+			BUILD_TEST_UNHEXIFY(m_out,EngOut);
 #undef BUILD_TEST_UNHEXIFY
 			break;
 		case CmpFromSignalProcessing:
@@ -412,6 +424,14 @@ BuildTx::BuildTx()
 					continue;
 				bool first = m_y.m_compare.length() == 0;
 				SignalProcessing::sum(m_y.m_compare,a.m_tx.m_compare,first);
+			}
+			m_out.m_compare.resize(m_y.m_compare.length() * 2);
+			int* out = m_out.m_compare.data();
+			unsigned int clamp = 0;
+			for (unsigned int y = 0;y < m_y.m_compare.length();y++,out++) {
+			    (*out) = ::round(SigProcUtils::energize(m_y.m_compare[y].real(),2047,1,clamp));
+			    out++;
+			    (*out) = ::round(SigProcUtils::energize(m_y.m_compare[y].imag(),2047,1,clamp));
 			}
 			break;
 	}
@@ -595,8 +615,11 @@ bool BuildTx::test()
 				m_y.m_data[n] += x[n] * s[n];
 			}
 		}
+		CHECKPOINT(FreqShift,0);
 		// Clip the value into the +/-1 range.
 		unsigned clipped = 0;
+		m_out.m_data.resize(m_y.m_data.length() * 2);
+		int* out = m_out.m_data.data();
 		for (unsigned int n = 0; n < m_y.m_data.length(); n++) {
 			Complex r = m_y.m_data[n];
 			if (r.real()>1.0) {
@@ -607,6 +630,8 @@ bool BuildTx::test()
 				m_y.m_data[n].real(-1.0);
 				clipped++;
 			}
+			*out++ = ::round(m_y.m_data[n].real() * 2047);
+			
 			if (r.imag()>1.0) {
 				m_y.m_data[n].imag(1.0);
 				clipped++;
@@ -615,11 +640,12 @@ bool BuildTx::test()
 				m_y.m_data[n].imag(-1.0);
 				clipped++;
 			}
+			*out++ = ::round(m_y.m_data[n].imag() * 2047);
 		}
 		if (clipped>0) {
 			Debug(DebugAll, "%d outupt values clipped", clipped);
 		}
-		CHECKPOINT(FreqShift,0);
+		CHECKPOINT(EngOut,0);
 		m_checkPoint = CheckPointOk;
 		break;
 	}
@@ -658,6 +684,7 @@ bool BuildTx::checkPoint(unsigned int point, TestARFCN* arfcn)
 		CASE_POINT_VECT_A(ARFCNs,&arfcn->m_s,0);
 		CASE_POINT_VECT_A(ARFCNTx,&arfcn->m_tx,0);
 		CASE_POINT_VECT(FreqShift,&m_y,0);
+		CASE_POINT_VECT(EngOut,&m_out,0);
 		default:
 			return true;
 	}
@@ -789,6 +816,11 @@ void BuildTx::saveResult()
 			buf = createSectPoint(FreqShift);
 			m_y.dump(*buf,"data");
 			o = o->append(buf);
+		}
+		if (m_checkPoint >= EngOut) {
+		    buf = createSectPoint(EngOut);
+		    m_out.dump(*buf,"data");
+		    o = o->append(buf);
 		}
 	}
 	buf = new String;

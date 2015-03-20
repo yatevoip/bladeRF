@@ -128,6 +128,28 @@ public:
      * @return Destination String address
      */
     static String& appendComplex(String& dest, const Complex& val, const char* sep);
+
+    /**
+     * Energize a number. Refer the input value to the requested energy.
+     * @param value The number to energize.
+     * @param energy The energy to be applied
+     * @param scale Scale factor for the given value.
+     * @param clamp This value is incremented if the value is outside -1 1 range.
+     */
+    inline static float energize(float value, unsigned int energy, float scale, unsigned int& clamp)
+    {
+	if (scale != 1)
+	value *= scale;
+	if (value > 1) {
+	    clamp++;
+	    return energy;
+	}
+	if (value < -1) {
+	    clamp++;
+	    return - energy;
+	}
+	return value * energy;
+    }
 };
 
 

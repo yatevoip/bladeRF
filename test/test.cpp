@@ -98,14 +98,11 @@ bool TestIface::readRadio(RadioIOData& data, unsigned int* n)
 }
 
 // Write data to radio
-bool TestIface::writeRadio(RadioIOData& data)
+bool TestIface::writeRadio(const ComplexVector& data, float scale, const GSMTime& t)
 {
-    int16_t* b = data.data();
-    unsigned int samples = data.pos();
-    if (!(b && samples))
+    if (!data.length())
 	return true;
-    // NOTE: Simulate write
-    data.consumed(samples);
+    // TODO make something with the data.
     return true;
 }
 

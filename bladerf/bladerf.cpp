@@ -44,6 +44,7 @@ using namespace TelEngine;
 #define BRF_RX_DC_OFFSET(val) (((double)val * BRF_RX_DC_OFFSET_COEF + BRF_RX_DC_OFFSET_ERROR) * BRF_RX_DC_OFFSET_AVG_DAMPING)
 
 #define BANDWIDTH 1500000
+#define CLAMP 2047
 
 const TokenDict s_loopbackMode[] = {
     { "txlpf-rxvga2",       BLADERF_LB_BB_TXLPF_RXVGA2 },
@@ -369,7 +370,6 @@ BrfIface::BrfIface()
     m_dumpMutex(true,s_dumpMutexName),
     m_txDump(0),
     m_loopbackFreq(0),
-    m_dumpTxTime(false),
     m_txDumper(0),
     m_rxDumper(0)
 {
@@ -469,8 +469,6 @@ int BrfIface::command(const String& cmd, String* rspParam, String* reason)
 	if (ret)
 	    rspParam->append(lookup(l,s_lnaGain));
 	return tuneCmdReturn(ret);
-    } else if (cmd.startsWith("tx-time")) {
-	m_dumpTxTime = true;
     } else if (cmd.startsWith("board-dump")) {
 	unsigned int frames = 0;
 	if (::sscanf(cmd.c_str(),"board-dump %u",&frames) != 1) {
@@ -580,7 +578,7 @@ bool BrfIface::readRadio(RadioIOData& data, unsigned int* samples)
 	    if (n > m_rxIO.count())
 		n = m_rxIO.count();
 	    unsigned int rd = m_rxIO.bufSamples() * n;
-	    int ok = ::bladerf_sync_rx(m_dev,m_rxIO.buffer(),rd,0,data.syncIOWait());
+	    int ok = ::bladerf_sync_rx(m_dev,m_rxIO.buffer(),rd,0,m_readTimeout);
 	    if (thShouldExit(this))
 		return true;
 	    if (ok < 0) {
@@ -645,7 +643,7 @@ bool BrfIface::readRadio(RadioIOData& data, unsigned int* samples)
 }
 
 // Write data to radio
-bool BrfIface::writeRadio(RadioIOData& data)
+bool BrfIface::writeRadio(const ComplexVector& data, float powerScale, const GSMTime& t)
 {
     BRF_TX_SERIALIZE_ON_RET(false,false);
     if (!flag(BrfTxOn)) {
@@ -653,53 +651,55 @@ bool BrfIface::writeRadio(RadioIOData& data)
 	    prefix(),this);
 	return true;
     }
-    int16_t* buf = data.data();
-    unsigned int len = data.pos();
 
-    if (!(buf && len))
+    if (!data.length())
 	return true;
-    if (m_txDumper)
-	m_txDumper->write((void*)buf,len * 4,data.timestamp());
     if (m_txShowInfo) {
         if (m_txShowInfo > 0)
             m_txShowInfo--;
 	if (debugAt(DebugAll)) {
-	    int minVal = 0;
-	    int maxVal = 0;
-	    int16_t* b = buf;
-	    for (unsigned int n = len * 2; n; n--, b++)
-		computeMinMax(minVal,maxVal,*b);
-	    Debug(this,DebugAll,"%sTx min=%d max=%d [%p]",prefix(),minVal,maxVal,this);
+	    float minVal = 0, maxVal = 0;
+	    const Complex* c = data.data();
+	    for (unsigned int i = 0; i < data.length(); i++) {
+		float min = c[i].imag(), max = c[i].real();
+		if (min > max) {
+		    min = max;
+		    max = c[i].imag();
+		}
+		if (minVal > min)
+		    minVal = min;
+		if (maxVal < max)
+		    maxVal = max;
+	    }
+	    Debug(this,DebugAll,"%sTx min=%f max=%f [%p]",prefix(),minVal,maxVal,this);
 	}
     }
     unsigned int consumed = 0;
-    uint64_t dataTs = data.timestamp() - data.pos();
 #ifdef BRF_DEBUG_SEND
     Debugger wr(DebugNote,"BrfIface::write"," samples=%u ts=" FMT64U " [%p]",
-	len,dataTs,this);
+		data.length(),m_txIO.m_timestamp,this);
 #endif
-    // Drop the buffer and resync if timestamp is not matching
+    u_int64_t dataTs = t.fn() * 8 * data.length() + t.tn() * data.length();
     if (dataTs != m_txIO.m_timestamp) {
 	Debug(this,DebugWarn,
-	    "%sTx timestamp difference our=" FMT64U " input=" FMT64U " [%p]",
-	    prefix(),m_txIO.m_timestamp,dataTs,this);
+		"%sTx timestamp difference our=" FMT64U " input=" FMT64U " [%p]",
+		prefix(),m_txIO.m_timestamp,dataTs,this);
 	m_txIO.m_pos = 0;
 	m_txIO.m_timestamp = dataTs;
     }
     unsigned int& nBuf = m_txIO.m_buffers;
-    u_int64_t lastTimestamp = 0;
-    while (consumed < len) {
+    while (consumed < data.length()) {
 #ifdef BRF_DEBUG_SEND
 	Debugger debug(DebugAll,"BrfIface SEND LOOP",
 	    " consumed=%u BUF: ts=" FMT64U " pos=%u [%p]",
 	    consumed,m_txIO.m_timestamp,m_txIO.m_pos,this);
 #endif
 	// Fill the buffers
-	for (; consumed < len && nBuf < m_txIO.count(); nBuf++, m_txIO.m_pos = 0) {
+	for (; consumed < data.length() && nBuf < m_txIO.count(); nBuf++, m_txIO.m_pos = 0) {
 	    int avail = m_txIO.available();
 	    if (avail <= 0)
 		continue;
-	    unsigned int cp = len - consumed;
+	    unsigned int cp = data.length() - consumed;
 	    if (cp > (unsigned int)avail)
 		cp = avail;
 	    // Don't fill a partial buffer if not the first one
@@ -707,11 +707,19 @@ bool BrfIface::writeRadio(RadioIOData& data)
 	    if (m_txIO.m_buffers && (m_txIO.m_pos + cp) < m_txIO.useSamples())
 		break;
 	    int16_t* p = m_txIO.samples(m_txIO.m_buffers) + (m_txIO.m_pos * 2);
-	    if (!m_modulated && m_predefinedData)
+	    if (m_modulated || !m_predefinedData) {
+		// Energize the data
+		const Complex* c = data.data() + consumed;
+		unsigned int clamped = 0;
+		for (unsigned int i = 0;i < cp;i++,c++) {
+		    *p++ = (short)::round(SigProcUtils::energize(c->real(),CLAMP,powerScale,clamped));
+		    *p++ = (short)::round(SigProcUtils::energize(c->imag(),CLAMP,powerScale,clamped));
+		}
+		if (clamped)
+		    Debug(this,DebugNote,"Output buffer clamped %u times!",clamped);
+	    } else
 		::memcpy(p,m_predefinedData,cp * sizeof(int16_t) * 2);
-	    else
-		::memcpy(p,buf,cp * sizeof(int16_t) * 2);
-	    
+
 #ifdef BRF_DEBUG_SEND
 	    Debug(this,DebugAll,"%sTx copied %u samples buf=%u at ts=" FMT64U " [%p]",
 		prefix(),cp,m_txIO.m_buffers,m_txIO.m_timestamp,this);
@@ -725,10 +733,8 @@ bool BrfIface::writeRadio(RadioIOData& data)
 		hdr.timeHi = swapBytes((uint32_t)(m_txIO.m_timestamp >> 31));
 		hdr.reserved = 0xdeadbeef;
 		hdr.flags = (uint32_t)-1;
-		lastTimestamp = m_txIO.m_timestamp;
 	    }
 	    m_txIO.advance(cp);
-	    buf += cp * 2;
 	    consumed += cp;
 	    // Don't advance the buffers count if partially filled
 	    if (m_txIO.m_pos < m_txIO.useSamples())
@@ -739,6 +745,8 @@ bool BrfIface::writeRadio(RadioIOData& data)
 	unsigned int n = m_txIO.m_buffers;
 	m_txIO.m_buffers = 0;
 
+	if (m_txDumper)
+	    m_txDumper->write((void*)m_txIO.buffer(),m_txIO.bufSamples() * 4,m_txIO.m_timestamp);
 	if (m_txDump) {
 	    Lock myLock(m_dumpMutex);
 	    if (m_txDump)
@@ -746,7 +754,7 @@ bool BrfIface::writeRadio(RadioIOData& data)
 	}
 
 	int ok = ::bladerf_sync_tx(m_dev,m_txIO.buffer(),n * m_txIO.bufSamples(),
-	    0,data.syncIOWait());
+		0,m_writeTimeout);
 	if (thShouldExit(this))
 	    return true;
 	if (ok < 0)
@@ -763,23 +771,9 @@ bool BrfIface::writeRadio(RadioIOData& data)
     }
 #ifdef BRF_DEBUG_SEND
     Debug(this,DebugAll,
-	"%swriteRadio() exiting DATA: ts=" FMT64U " consumed=%u/%u BUF: ts=" FMT64U " pos=%u [%p]",
-	prefix(),data.timestamp(),consumed,data.pos(),m_txIO.m_timestamp,m_txIO.m_pos,this);
+	"%swriteRadio() exiting DATA:  consumed=%u BUF: ts=" FMT64U " pos=%u [%p]",
+	prefix(),consumed,m_txIO.m_timestamp,m_txIO.m_pos,this);
 #endif
-    data.consumed(consumed);
-    if (m_dumpTxTime) {
-	m_dumpTxTime = false;
-	GSMTime lt,bt,diff,rc,diffr;
-	uint fd = 1250 * 8;
-	lt.assign(lastTimestamp / fd,(lastTimestamp % fd) / 1250);
-	bt.assign(data.timestamp() / fd,(data.timestamp() % fd) / 1250);
-	GSMTime::diff(diff,bt,lt);
-	getRadioClock(rc);
-	GSMTime::diff(diffr,data.m_time,rc);
-	Debug(this,DebugNote,"\nTxBoard time FN %d TN %d unused %d\nTxRadio time FN %d TN %d unused %d\nTxDiff %d %d\nTxRadio Clock FN %d TN %d, radioClock FN %d TN %d diff %d %d",
-		    lt.fn(),lt.tn(),(int)(lastTimestamp % 1250),bt.fn(),bt.tn(),(int)(data.timestamp() % 1250),diff.fn(),diff.tn(),data.m_time.fn(),data.m_time.tn(),rc.fn(),rc.tn(),diffr.fn(),diffr.tn());
-
-    }
     return true;
 }
 
@@ -873,8 +867,8 @@ bool BrfIface::open(const NamedList& params)
 	m_loopbackFreq = params.getIntValue(YSTRING("loopback-freq"),0);
 	// Init sync I/O timeouts
 	unsigned int tout = getUInt(params,YSTRING("io_timeout"),500,Thread::idleMsec());
-	m_rxData.syncIOWait(tout);
-	m_txData.syncIOWait(tout);
+	m_readTimeout = tout;
+	m_writeTimeout = tout;
 	m_rxShowDcInfo = 0;
 	m_txShowInfo = 0;
 	m_rxVga1 = BLADERF_RXVGA1_GAIN_MAX;
@@ -1069,7 +1063,7 @@ bool BrfIface::setBandwith(bool rx, int& code, String& what, unsigned int value,
 bool BrfIface::initSyncIO(bool rx, unsigned int numBuffers, unsigned int bufSizeSamples,
     unsigned int numTransfers, int* code, String* what)
 {
-    unsigned int tout = rx ? m_rxData.syncIOWait() : m_txData.syncIOWait();
+    unsigned int tout = rx ? m_readTimeout : m_writeTimeout;
     int ok = ::bladerf_sync_config(m_dev,rxtxmod(rx),BLADERF_FORMAT_SC16_Q11,
 	numBuffers,bufSizeSamples,numTransfers,tout);
     if (ok >= 0) {
