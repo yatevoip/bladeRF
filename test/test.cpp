@@ -98,7 +98,7 @@ bool TestIface::readRadio(RadioIOData& data, unsigned int* n)
 }
 
 // Write data to radio
-bool TestIface::writeRadio(const ComplexVector& data, float scale, const GSMTime& t)
+bool TestIface::writeRadio(const ComplexVector& data, float scale)
 {
     if (!data.length())
 	return true;
